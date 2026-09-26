@@ -20,6 +20,11 @@ namespace QuickDraw.Pict
         public int OriginH, OriginV;             // QuickDraw SetOrigin offset
         public (int top, int left, int bottom, int right)? Clip;  // null = whole canvas
 
+        // Patterns as DrawPicture initializes them (Executor C_DrawPicture): background white, pen and fill black.
+        public Pattern BkPat = Pattern.White;
+        public Pattern PnPat = Pattern.Black;
+        public Pattern FillPat = Pattern.Black;
+
         public PictPoint Pen;                    // current pen position (canvas space)
         public (int top, int left, int bottom, int right) LastRect;  // for the "same shape" opcodes
         public PictPoint[]? LastPoly;            // for the "same poly" opcodes

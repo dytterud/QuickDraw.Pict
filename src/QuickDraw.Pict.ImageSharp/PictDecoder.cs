@@ -3,6 +3,7 @@ using System.Threading;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.Metadata;
+using SixLabors.ImageSharp.Metadata.Profiles.Icc;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace QuickDraw.Pict.ImageSharp
@@ -13,8 +14,6 @@ namespace QuickDraw.Pict.ImageSharp
     /// </summary>
     public sealed class PictDecoder : SpecializedImageDecoder<PictDecoderOptions>
     {
-        private const double QuickDrawDpi = 72;
-
         private PictDecoder()
         {
         }
@@ -25,8 +24,12 @@ namespace QuickDraw.Pict.ImageSharp
         /// <inheritdoc/>
         protected override ImageInfo Identify(DecoderOptions options, Stream stream, CancellationToken cancellationToken)
         {
-            (int width, int height) = Guard(() => PictHeader.ReadFrameSize(stream));
-            return new ImageInfo(new PixelTypeInfo(32), new Size(width, height), CreateMetadata(options));
+            PictInfo info = Guard(() => PictHeader.ReadInfo(stream));
+            var size = new Size(System.Math.Max(1, info.Bounds.Width), System.Math.Max(1, info.Bounds.Height));
+            var metadata = new ImageMetadata();
+            if (!options.SkipMetadata)
+                ApplyMetadata(metadata, info);
+            return new ImageInfo(new PixelTypeInfo(32), size, metadata);
         }
 
         /// <inheritdoc/>
@@ -49,8 +52,8 @@ namespace QuickDraw.Pict.ImageSharp
                     image = rgba.CloneAs<TPixel>(configuration);
             }
 
-            if (!general.SkipMetadata)
-                ApplyResolution(image.Metadata);
+            if (!general.SkipMetadata && bitmap.Info != null)
+                ApplyMetadata(image.Metadata, bitmap.Info);
             ScaleToTargetSize(general, image);
             return image;
         }
@@ -63,20 +66,15 @@ namespace QuickDraw.Pict.ImageSharp
         protected override PictDecoderOptions CreateDefaultSpecializedOptions(DecoderOptions options) =>
             new PictDecoderOptions { GeneralOptions = options };
 
-        private static ImageMetadata CreateMetadata(DecoderOptions options)
-        {
-            var metadata = new ImageMetadata();
-            if (!options.SkipMetadata)
-                ApplyResolution(metadata);
-            return metadata;
-        }
-
-        // QuickDraw coordinates are 72 dpi.
-        private static void ApplyResolution(ImageMetadata metadata)
+        // Resolution from the picture header (72 dpi unless an extended version 2 header says otherwise) and the
+        // embedded ICC profile, if the picture carries one.
+        private static void ApplyMetadata(ImageMetadata metadata, PictInfo info)
         {
             metadata.ResolutionUnits = PixelResolutionUnit.PixelsPerInch;
-            metadata.HorizontalResolution = QuickDrawDpi;
-            metadata.VerticalResolution = QuickDrawDpi;
+            metadata.HorizontalResolution = info.HorizontalResolution;
+            metadata.VerticalResolution = info.VerticalResolution;
+            if (info.IccProfile is { Length: > 0 } icc)
+                metadata.IccProfile = new IccProfile(icc);
         }
 
         // ImageSharp reports corrupt/truncated input as InvalidImageContentException.

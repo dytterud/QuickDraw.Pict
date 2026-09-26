@@ -5,6 +5,22 @@ namespace QuickDraw.Pict
     /// <summary>An 8-bit RGBA color.</summary>
     public readonly record struct PictColor(byte R, byte G, byte B, byte A = 255);
 
+    /// <summary>A QuickDraw rectangle in picture coordinates: <see cref="Right"/> and <see cref="Bottom"/> are exclusive.</summary>
+    public readonly record struct PictRect(int Top, int Left, int Bottom, int Right)
+    {
+        /// <summary>Right − Left.</summary>
+        public int Width => Right - Left;
+
+        /// <summary>Bottom − Top.</summary>
+        public int Height => Bottom - Top;
+
+        /// <summary>True when the rectangle encloses no pixels (QuickDraw <c>EmptyRect</c>).</summary>
+        public bool IsEmpty => Bottom <= Top || Right <= Left;
+    }
+
+    /// <summary>A picture comment (opcodes 0x00A0 / 0x00A1); <see cref="Data"/> is empty for short comments.</summary>
+    public readonly record struct PictComment(int Kind, byte[] Data);
+
     /// <summary>A point in canvas pixel space.</summary>
     public readonly record struct PictPoint(float X, float Y);
 

@@ -36,6 +36,9 @@ namespace QuickDraw.Pict
         /// <summary>The RGBA pixel data.</summary>
         public byte[] Pixels { get; }
 
+        /// <summary>The header and metadata of the picture this bitmap was decoded from, if any.</summary>
+        public PictInfo? Info { get; init; }
+
         /// <summary>Gets or sets the pixel at (<paramref name="x"/>, <paramref name="y"/>).</summary>
         public PictColor this[int x, int y]
         {

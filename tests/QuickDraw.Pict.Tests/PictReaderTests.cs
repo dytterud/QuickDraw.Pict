@@ -26,10 +26,10 @@ public class PictReaderTests
     }
 
     [Theory]
-    [InlineData(1, 1)]
+    [InlineData(1, 1)]     // rowBytes 4 < 8: rows stored unpacked
     [InlineData(3, 2)]
-    [InlineData(83, 4)]    // rowBytes 249: byte-sized PackBits row counts
-    [InlineData(84, 4)]    // rowBytes 252: word-sized PackBits row counts
+    [InlineData(62, 4)]    // rowBytes 248: byte-sized PackBits row counts
+    [InlineData(63, 4)]    // rowBytes 252: word-sized PackBits row counts
     [InlineData(300, 5)]   // runs longer than 128 bytes split across PackBits packets
     public void WrittenPict_ReadsBackPixelIdentical(int w, int h)
     {
@@ -75,13 +75,6 @@ public class PictReaderTests
         var white = new PictColor(255, 255, 255);
         Assert.Equal(new[] { black, white, black, white, white, white, white, white }, Row(bmp, 0));
         Assert.Equal(new[] { white, black, white, black, white, white, white, white }, Row(bmp, 1));
-    }
-
-    [Fact]
-    public void ReadFrameSize_SkipsTheFileHeader()
-    {
-        using var ms = new MemoryStream(Write(TestCard(40, 20)));
-        Assert.Equal((40, 20), PictHeader.ReadFrameSize(ms));
     }
 
     [Fact]

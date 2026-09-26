@@ -15,22 +15,30 @@ namespace QuickDraw.Pict
         private readonly Stream stream;
         private readonly int width, height;
         private readonly byte[] planar;
-        private readonly bool sizesAreWords;
+        private readonly bool packed, sizesAreWords;
         private long written;
         private int rows;
 
+        // PixMap rowBytes is 14 bits (the top two are flags), and a 32-bit pixel takes 4 bytes of a row.
+        private const int MaxWidth = 0x3FFF / 4;
+
         /// <summary>Starts a picture of the given size on <paramref name="stream"/> and writes its header.</summary>
+        /// <exception cref="ArgumentOutOfRangeException">Width is not 1..4095 or height not 1..32767.</exception>
         public PictWriter(Stream stream, int width, int height)
         {
             ArgumentNullException.ThrowIfNull(stream);
-            if (width <= 0 || width > short.MaxValue / 3) throw new ArgumentOutOfRangeException(nameof(width));
+            if (width <= 0 || width > MaxWidth) throw new ArgumentOutOfRangeException(nameof(width));
             if (height <= 0 || height > short.MaxValue) throw new ArgumentOutOfRangeException(nameof(height));
             this.stream = stream;
             this.width = width;
             this.height = height;
-            int rowBytes = width * 3;
-            planar = new byte[rowBytes];
+            // 32-bit pixels: rowBytes = 4 * width. Rows under 8 bytes are stored unpacked (Appendix A, PixData);
+            // otherwise packType 4 packs the R, G and B planes (width bytes each) with a byte count that is a word
+            // when rowBytes > 250.
+            int rowBytes = width * 4;
+            packed = rowBytes >= 8;
             sizesAreWords = rowBytes > 250;
+            planar = new byte[width * 3];
             WriteHeader(rowBytes);
         }
 
@@ -59,15 +67,24 @@ namespace QuickDraw.Pict
         {
             if (rgb.Length != width * 3) throw new ArgumentException($"Expected {width * 3} bytes of RGB data.", nameof(rgb));
             if (rows == height) throw new InvalidOperationException("All rows have already been written.");
+            if (!packed)
+            {
+                for (int x = 0; x < width; x++)            // unpacked 32-bit pixels: pad, R, G, B
+                {
+                    U8(0); U8(rgb[3 * x]); U8(rgb[3 * x + 1]); U8(rgb[3 * x + 2]);
+                }
+                rows++;
+                return;
+            }
             for (int x = 0; x < width; x++)
             {
                 planar[x] = rgb[3 * x];
                 planar[width + x] = rgb[3 * x + 1];
                 planar[2 * width + x] = rgb[3 * x + 2];
             }
-            var packed = PackBits(planar);
-            if (sizesAreWords) U16(packed.Length); else U8(packed.Length);
-            Bytes(packed);
+            var line = PackBits(planar);
+            if (sizesAreWords) U16(line.Length); else U8(line.Length);
+            Bytes(line);
             rows++;
         }
 
