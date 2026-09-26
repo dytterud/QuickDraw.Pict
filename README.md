@@ -4,7 +4,7 @@ Reader and writer for Apple QuickDraw PICT (v1/v2) images.
 
 | Package | What it is |
 |---|---|
-| `QuickDraw.Pict` | Dependency-free core. `PictReader` decodes to an RGBA `PictBitmap` with a software QuickDraw engine (regions, patterns, pen and transfer modes); `PictWriter` writes PICT v2; `PictHeader` detects pictures and reads their header. Text uses the bitmap fonts you supply (`PictFontLibrary`), else an `IPictTextFallback` (skipped if none). |
+| `QuickDraw.Pict` | Dependency-free core. `PictReader` decodes to an RGBA `PictBitmap` with a software QuickDraw engine (regions, patterns, pen and transfer modes); `PictWriter` writes PICT v2 (indexed, 16-bit, 32-bit with alpha); `PictHeader` detects pictures and reads their header. Text uses the bitmap fonts you supply (`PictFontLibrary`), else an `IPictTextFallback` (skipped if none). |
 | `QuickDraw.Pict.ImageSharp` | [ImageSharp](https://github.com/SixLabors/ImageSharp) format plugin built on the core: detection, decode (text via SixLabors.Fonts), encode, `SaveAsPict`. |
 
 ## ImageSharp
@@ -28,8 +28,15 @@ using var image = PictDecoder.Instance.Decode<Rgba32>(options, stream);
 ```csharp
 PictBitmap bitmap = PictReader.Decode(bytes);            // everything but text
 PictBitmap drawn  = PictReader.Decode(bytes, new PictDecodeOptions { TextFallback = myTextRasterizer });
-PictWriter.Write(stream, bitmap);
+PictWriter.Write(stream, bitmap);                        // 24-bit, 72 dpi
+PictWriter.Write(stream, bitmap, new PictWriteOptions { Format = PictPixelFormat.Indexed8, Palette = colors,
+    HorizontalResolution = 144, VerticalResolution = 144, IccProfile = icc });
 ```
+
+The writer stores 1/2/4/8-bit indexed, 16-bit, and 32-bit with or without alpha, the resolution (as an extended
+version 2 header with a 72 dpi picture frame) and an ICC profile, and splits images wider than one bitmap opcode allows
+into strips. The ImageSharp `PictEncoder` exposes `BitsPerPixel` (indexed depths use ImageSharp's quantizer) and takes
+the resolution and ICC profile from the image's metadata.
 
 Text is drawn exactly as QuickDraw does when you supply the classic Mac bitmap fonts it uses: add `FOND`, `NFNT` and
 `FONT` resources (from a font suitcase, the System file or an application) to a `PictFontLibrary` and pass it as

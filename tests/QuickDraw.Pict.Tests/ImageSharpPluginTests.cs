@@ -51,7 +51,7 @@ public class ImageSharpPluginTests
 
         AssertSamePixels(src, loaded);
         Assert.Same(PictFormat.Instance, loaded.Metadata.DecodedImageFormat);
-        Assert.Equal(72, loaded.Metadata.HorizontalResolution);
+        Assert.Equal(src.Metadata.HorizontalResolution, loaded.Metadata.HorizontalResolution, 3);   // resolution round-trips
     }
 
     [Theory]
