@@ -40,7 +40,9 @@ namespace QuickDraw.Pict
         private Region lastRegion = Region.Empty;
 
         public int TextFontId, TextFace, TextSize, TextMode = TransferModes.SrcOr;
+        public int SpaceExtra;                                    // Fixed
         private int textH, textV;                                 // text origin, picture space
+        private (int h, int v) textNumer, textDenom;              // text scaling, as DrawPicture's play state
         private readonly Dictionary<int, string> fontNames = new Dictionary<int, string>();
 
         public GrafPort(PictBitmap canvas, PictRect pictureFrame, PictDecodeOptions options)
@@ -50,6 +52,8 @@ namespace QuickDraw.Pict
             fromRect = pictureFrame;
             toRect = new PictRect(0, 0, canvas.Height, canvas.Width);
             HiliteColor = options.HiliteColor;
+            textNumer = (toRect.Width, toRect.Height);
+            textDenom = (fromRect.Width, fromRect.Height);
         }
 
         private PortColors Colors => new PortColors(ForeColor, BackColor, OpColor, HiliteColor);
@@ -84,6 +88,13 @@ namespace QuickDraw.Pict
         public void PenSize(int h, int v) => (penWidth, penHeight) = PictureMapping.ScaleSize(h, v, fromRect, toRect);
         public void OvalSize(int h, int v) => (ovalWidth, ovalHeight) = PictureMapping.ScaleSize(h, v, fromRect, toRect);
         public void HiliteMode() => hilitePending = true;
+
+        // TxRatio: the text scale numerator (scaled like a pen size) and denominator.
+        public void TextRatio(int numerH, int numerV, int denomH, int denomV)
+        {
+            textNumer = PictureMapping.ScaleSize(numerH, numerV, fromRect, toRect);
+            textDenom = (denomH, denomV);
+        }
         public void DefaultHilite() => HiliteColor = options.HiliteColor;
         public void FontName(int fontId, string name) => fontNames[fontId] = name;
 
@@ -211,27 +222,41 @@ namespace QuickDraw.Pict
         // ---- text ----
 
         // LongText sets the text origin; DH/DV/DHDV text move it from the previous origin. Drawing does not move it.
-        public void LongText(int h, int v, string s)
+        public void LongText(int h, int v, byte[] text)
         {
             textH = h;
             textV = v;
-            DrawText(s);
+            DrawText(text);
         }
 
-        public void OffsetText(int dh, int dv, string s)
+        public void OffsetText(int dh, int dv, byte[] text)
         {
             textH += dh;
             textV += dv;
-            DrawText(s);
+            DrawText(text);
         }
 
-        private void DrawText(string s)
+        // StdText: bitmap fonts from the font library when it has the family (or a stand-in the Font Manager would
+        // use), else the outline text fallback. A fontName opcode maps the picture's font number to a family by name.
+        private void DrawText(byte[] text)
         {
-            var fallback = options.TextFallback;
-            if (string.IsNullOrEmpty(s) || fallback == null) { Done(); return; }
-            fontNames.TryGetValue(TextFontId, out var name);
-            var mask = fallback.Render(s, new PictTextStyle(TextFontId, TextFace, TextSize, name));
+            if (text.Length == 0) { Done(); return; }
             var (x, y) = MapPoint(textH, textV);
+            fontNames.TryGetValue(TextFontId, out var name);
+            if (options.Fonts is { } library)
+            {
+                int family = name != null && library.TryGetFamilyByName(name, out int byName) ? byName : TextFontId;
+                var font = FontManager.Swap(library, family, TextSize, TextFace, textNumer, textDenom, SpaceExtra);
+                if (font != null)
+                {
+                    TextDrawer.Draw(canvas, font, text, x, y, TextMode, clip, hilitePending, Colors);
+                    Done();
+                    return;
+                }
+            }
+            var fallback = options.TextFallback;
+            if (fallback == null) { Done(); return; }
+            var mask = fallback.Render(PictReader.MacRomanString(text), new PictTextStyle(TextFontId, TextFace, TextSize, name));
             if (mask != null && mask.Width > 0 && mask.Height > 0)
                 Painter.FillMask(canvas, x - mask.OriginX, y - mask.OriginY, mask.Width, mask.Height, mask.Bits,
                     clip, TextMode, hilitePending, Colors);

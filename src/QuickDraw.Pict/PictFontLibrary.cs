@@ -1,0 +1,102 @@
+using System;
+using System.Collections.Generic;
+
+namespace QuickDraw.Pict
+{
+    /// <summary>
+    /// Classic Macintosh bitmap fonts for drawing a picture's text exactly as QuickDraw does: font families
+    /// (<c>FOND</c> resources) and their bitmap strikes (<c>NFNT</c> and <c>FONT</c> resources), as found in the
+    /// resource forks of font suitcases, the System file or an application. No fonts are built in.
+    /// </summary>
+    /// <remarks>
+    /// Families are found by number (the picture's TxFont) or, when the picture names its fonts (the fontName
+    /// opcode), by name. Old-style <c>FONT</c> resources without a family record are found by their resource id
+    /// (family × 128 + size). Text in a family the library lacks falls back to
+    /// <see cref="PictDecodeOptions.TextFallback"/>.
+    /// </remarks>
+    public sealed class PictFontLibrary
+    {
+        private readonly Dictionary<int, FontFamilyRecord> families = new Dictionary<int, FontFamilyRecord>();
+        private readonly Dictionary<string, int> familyNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<int, byte[]> nfnt = new Dictionary<int, byte[]>();
+        private readonly Dictionary<int, byte[]> font = new Dictionary<int, byte[]>();
+        private readonly Dictionary<(bool nfnt, int id), BitmapFont?> parsed = new Dictionary<(bool, int), BitmapFont?>();
+
+        /// <summary>The family used for font number 0 (the system font). Defaults to 0 (Chicago).</summary>
+        public int SystemFontId { get; init; }
+
+        /// <summary>The family used for font number 1 (the application font). Defaults to 3 (Geneva).</summary>
+        public int ApplicationFontId { get; init; } = 3;
+
+        // A library is filled before decoding starts; decoding only reads it (strikes parse lazily, under a lock).
+
+        /// <summary>Adds a font family: a <c>FOND</c> resource with its resource id (the family number) and name.</summary>
+        public void AddFamily(int familyId, string? name, byte[] fond)
+        {
+            ArgumentNullException.ThrowIfNull(fond);
+            families[familyId] = FontFamilyRecord.Parse(familyId, fond);
+            if (!string.IsNullOrEmpty(name)) familyNames[name] = familyId;
+        }
+
+        /// <summary>Adds an <c>NFNT</c> resource (a bitmap strike referenced by a family's association table).</summary>
+        public void AddNfnt(int resourceId, byte[] data)
+        {
+            ArgumentNullException.ThrowIfNull(data);
+            nfnt[resourceId] = data;
+        }
+
+        /// <summary>
+        /// Adds a <c>FONT</c> resource. Old-style fonts are numbered family × 128 + size; size 0 carries only the
+        /// family's name, which may be given here.
+        /// </summary>
+        public void AddFont(int resourceId, byte[] data, string? familyName = null)
+        {
+            ArgumentNullException.ThrowIfNull(data);
+            font[resourceId] = data;
+            if (!string.IsNullOrEmpty(familyName) && (resourceId & 127) == 0) familyNames.TryAdd(familyName, resourceId >> 7);
+        }
+
+        internal bool TryGetFamilyByName(string name, out int familyId) => familyNames.TryGetValue(name, out familyId);
+
+        internal FontFamilyRecord? Family(int familyId) => families.TryGetValue(familyId, out var f) ? f : null;
+
+        internal bool HasFamily(int familyId)
+        {
+            if (families.TryGetValue(familyId, out var fond) && fond.Associations.Length > 0) return true;
+            foreach (var id in font.Keys)
+                if ((id >> 7) == familyId && (id & 127) != 0) return true;
+            return false;
+        }
+
+        // Old-style FONT sizes of a family (resource ids family * 128 + size).
+        internal IEnumerable<int> OldStyleSizes(int familyId)
+        {
+            foreach (var id in font.Keys)
+                if ((id >> 7) == familyId && (id & 127) != 0) yield return id & 127;
+        }
+
+        // A strike by resource id: NFNT first, then FONT, as the Font Manager looks them up.
+        internal BitmapFont? Strike(int resourceId) => Load(true, resourceId) ?? Load(false, resourceId);
+
+        internal BitmapFont? OldStyleStrike(int familyId, int size) => Load(false, familyId * 128 + size);
+
+        private BitmapFont? Load(bool isNfnt, int id)
+        {
+            lock (parsed)
+                return LoadLocked(isNfnt, id);
+        }
+
+        private BitmapFont? LoadLocked(bool isNfnt, int id)
+        {
+            if (parsed.TryGetValue((isNfnt, id), out var cached)) return cached;
+            BitmapFont? result = null;
+            if ((isNfnt ? nfnt : font).TryGetValue(id, out var data))
+            {
+                try { result = BitmapFont.Parse(data); }
+                catch (ArgumentException) { }
+            }
+            parsed[(isNfnt, id)] = result;
+            return result;
+        }
+    }
+}

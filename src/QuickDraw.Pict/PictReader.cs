@@ -21,7 +21,7 @@ namespace QuickDraw.Pict
             try { return CodePagesEncodingProvider.Instance.GetEncoding(10000) ?? Encoding.Latin1; }
             catch { return Encoding.Latin1; }
         }
-        private static string ReadMacString(BinaryReader b, int n) => MacRoman.GetString(b.ReadExactly(n));
+        internal static string MacRomanString(byte[] bytes) => MacRoman.GetString(bytes);
 
         /// <summary>Decodes the picture read from the current position to the end of <paramref name="stream"/>.</summary>
         /// <inheritdoc cref="Decode(byte[], PictDecodeOptions?, CancellationToken)"/>
@@ -146,6 +146,8 @@ namespace QuickDraw.Pict
                 case 0x000B: { var p = ReadPoint(b); port.OvalSize(p.h, p.v); return true; }             // OvSize
                 case 0x000C: { var p = ReadPoint(b); port.Origin(p.h, p.v); return true; }                // Origin
                 case 0x000D: port.TextSize = b.ReadU16BE(); return true;                 // TxSize
+                case 0x0006: port.SpaceExtra = b.ReadI32BE(); return true;               // SpExtra (Fixed)
+                case 0x0010: { var n = ReadPoint(b); var d = ReadPoint(b); port.TextRatio(n.h, n.v, d.h, d.v); return true; }   // TxRatio
                 case 0x000E: port.ForeColor = ClassicColor((int)b.ReadU32BE(), true); return true;       // FgColor
                 case 0x000F: port.BackColor = ClassicColor((int)b.ReadU32BE(), false); return true;      // BkColor
                 case 0x001A: port.ForeColor = ReadRgb(b); return true;                   // RGBFgCol
@@ -188,7 +190,7 @@ namespace QuickDraw.Pict
             return false;
         }
 
-        private static string ReadText(BinaryReader b) => ReadMacString(b, b.ReadByte());
+        private static byte[] ReadText(BinaryReader b) => b.ReadExactly(b.ReadByte());
 
         // QuickDraw Point is (v, h) - vertical first.
         private static (int v, int h) ReadPoint(BinaryReader b)

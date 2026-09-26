@@ -11,9 +11,15 @@ namespace QuickDraw.Pict.ImageSharp
         public DecoderOptions GeneralOptions { get; init; } = new DecoderOptions();
 
         /// <summary>
-        /// Maps a QuickDraw font number (the picture's TxFont) to the font family used for its text opcodes.
-        /// Returning null, or leaving this unset, falls back to an installed system font resembling the classic
-        /// Mac font. Classic Mac bitmap fonts are not available, so text is always an approximation.
+        /// Classic Mac bitmap fonts (FOND/NFNT/FONT resources you supply) to draw text with exactly as QuickDraw does.
+        /// Text in a font the library lacks is drawn with an outline font instead (see <see cref="FontResolver"/>).
+        /// </summary>
+        public PictFontLibrary? BitmapFonts { get; init; }
+
+        /// <summary>
+        /// Maps a QuickDraw font number (the picture's TxFont) to the outline font family used for text that no
+        /// bitmap font covers. Returning null, or leaving this unset, falls back to an installed system font
+        /// resembling the classic Mac font; such text is an approximation.
         /// </summary>
         public Func<int, FontFamily?>? FontResolver { get; init; }
 

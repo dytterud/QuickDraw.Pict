@@ -13,6 +13,12 @@ namespace QuickDraw.Pict
         public IPictTextFallback? TextFallback { get; init; }
 
         /// <summary>
+        /// Bitmap fonts to draw text with, exactly as QuickDraw does. Text in a font the library lacks (or all text,
+        /// when this is null) goes to <see cref="TextFallback"/>.
+        /// </summary>
+        public PictFontLibrary? Fonts { get; init; }
+
+        /// <summary>
         /// The highlight color used by hilite-mode drawing (opcode 0x001C) until the picture sets its own
         /// (0x001D). Defaults to Color QuickDraw's standard light cyan (0x9999, 0xCCCC, 0xCCCC).
         /// </summary>
