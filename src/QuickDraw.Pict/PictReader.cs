@@ -70,6 +70,7 @@ namespace QuickDraw.Pict
                     if (b.BaseStream.Position >= b.BaseStream.Length) break;
 
                     int op = v1 ? b.ReadByte() : b.ReadU16BE();
+                    port.Version1 = v1;
                     switch (op)
                     {
                         case 0x0011:                        // VersionOp mid-stream: 1 = byte opcodes, 2 = word opcodes
@@ -175,7 +176,7 @@ namespace QuickDraw.Pict
                 case 0x0012: port.BkPat = Pattern.Read(b); return true;                  // BkPixPat
                 case 0x0013: port.PnPat = Pattern.Read(b); return true;                  // PnPixPat
                 case 0x0014: port.FillPat = Pattern.Read(b); return true;                // FillPixPat
-                case 0x0003: port.TextFontId = b.ReadU16BE(); return true;               // TxFont
+                case 0x0003: port.TextFont(b.ReadU16BE()); return true;                  // TxFont
                 case 0x0004: port.TextFace = b.ReadByte(); return true;                  // TxFace
                 case 0x0005: port.TextMode = b.ReadU16BE(); return true;                 // TxMode
                 case 0x0007: { var p = ReadPoint(b); port.PenSize(p.h, p.v); return true; }              // PnSize
@@ -184,6 +185,8 @@ namespace QuickDraw.Pict
                 case 0x000C: { var p = ReadPoint(b); port.Origin(p.h, p.v); return true; }                // Origin
                 case 0x000D: port.TextSize = b.ReadU16BE(); return true;                 // TxSize
                 case 0x0006: port.SpaceExtra = b.ReadI32BE(); return true;               // SpExtra (Fixed)
+                case 0x0015: port.PnLocHFrac(b.ReadU16BE()); return true;                // PnLocHFrac
+                case 0x0016: port.ChExtra = (short)b.ReadU16BE(); return true;           // ChExtra (4.12 per point)
                 case 0x0010: { var n = ReadPoint(b); var d = ReadPoint(b); port.TextRatio(n.h, n.v, d.h, d.v); return true; }   // TxRatio
                 case 0x000E: port.ForeColor = ClassicColor((int)b.ReadU32BE(), true); return true;       // FgColor
                 case 0x000F: port.BackColor = ClassicColor((int)b.ReadU32BE(), false); return true;      // BkColor
@@ -207,6 +210,18 @@ namespace QuickDraw.Pict
                     var data = b.ReadExactly(length);
                     if (length >= 3 && data[2] <= length - 3)
                         port.FontName((data[0] << 8) | data[1], MacRoman.GetString(data, 3, data[2]));
+                    return true;
+                }
+                case 0x002D:                                                              // LineJustify
+                {
+                    var data = b.ReadExactly(b.ReadU16BE());                              // interCharSpacing, textExtra
+                    if (data.Length >= 4) port.LineJustify((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]);
+                    return true;
+                }
+                case 0x002E:                                                              // glyphState
+                {
+                    var data = b.ReadExactly(b.ReadU16BE());                              // outline preferred, preserve
+                    if (data.Length >= 3) port.GlyphState(data[2] != 0);                   // glyph, fractional widths, ...
                     return true;
                 }
             }

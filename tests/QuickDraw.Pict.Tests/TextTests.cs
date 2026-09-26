@@ -25,10 +25,11 @@ public class TextTests
     }
 
     private static string[] Text(string s, int face = 0, int spExtra = 0, int width = 10, int height = 7,
-        PictFontLibrary? fonts = null, Action<PictBuilder>? before = null)
+        PictFontLibrary? fonts = null, Action<PictBuilder>? before = null, Action<PictBuilder>? beforeFont = null)
     {
-        var b = PictBuilder.V2(0, 0, height, width).U16(0x0003).U16(Family).U16(0x000D).U16(9)
-            .U16(0x0004).U8(face).Align();
+        var b = PictBuilder.V2(0, 0, height, width);
+        beforeFont?.Invoke(b);
+        b.Align().U16(0x0003).U16(Family).U16(0x000D).U16(9).U16(0x0004).U8(face).Align();
         if (spExtra != 0) b.U16(0x0006).U16(spExtra >> 16).U16(spExtra & 0xFFFF);
         before?.Invoke(b);
         b.Align().U16(0x0028).Point(4, 2).Text(s).Align().U16(0x00FF);
@@ -97,9 +98,47 @@ public class TextTests
     }
 
     [Fact]
-    public void Text_Outline_IsTheDilatedGlyphWithItsInsideInverted()
+    public void Text_Outline_OnAColorPort_DrawsOnlyTheRing()
     {
-        Assert.Equal(new[] { ".####.....", ".#ww#.....", ".#ww#.....", ".#ww#.....", ".####....." }, Text("A", face: 8)[0..5]);
+        // The shadow buffer with the glyph XOR-ed out, drawn one pixel up-left; the inside is left untouched.
+        Assert.Equal(new[] { ".####.....", ".#..#.....", ".#..#.....", ".#..#.....", ".####....." }, Text("A", face: 8)[0..5]);
+    }
+
+    [Fact]
+    public void Text_InkPastTheFinalPenPosition_IsClipped()
+    {
+        // 'W' advances 2 but its image is 4 wide: textRect ends at the pen + width (no slop), so columns 4-5 are cut.
+        var lib = new PictFontLibrary();
+        lib.AddFont(Family * 128 + 9, Build(3, 2, 0, 1, new[] { new Glyph('W', 2, 0, "####", "####", "####") }));
+        Assert.Equal("..##......", Text("W", fonts: lib)[1]);
+    }
+
+    [Fact]
+    public void Text_ChExtra_WidensEveryCharacterButSpaces()
+    {
+        // ChExtra 0x1C7 (4.12 per point) x 9 pt = 0.9998 pixel: the second 'A' starts at 2.5 + 3 + 0.9998 -> 6.
+        Assert.Equal("..##..##..", Text("AA", before: b => b.Align().U16(0x0016).U16(0x01C7))[1]);
+        Assert.Equal("..##....##", Text("A A", before: b => b.Align().U16(0x0016).U16(0x01C7))[1]);   // space: none
+    }
+
+    [Fact]
+    public void Text_PnLocHFrac_SetsThePenFractionForTheNextTextOnly()
+    {
+        // ChExtra 0xE4 x 9 = 0.501 pixel per character. From the default half pixel the second 'A' lands at
+        // 2.5 + 3.501 -> 6; from PnLocHFrac 0x7F00 (0.496) at 5.997 -> 5.
+        Action<PictBuilder> extra = b => b.Align().U16(0x0016).U16(0x00E4);
+        Assert.Equal("..##..##..", Text("AA", before: extra)[1]);
+        Assert.Equal("..##.##...", Text("AA", before: b => { extra(b); b.Align().U16(0x0015).U16(0x7F00); })[1]);
+    }
+
+    [Fact]
+    public void Text_TxRatio_ScalesTheSearchSize()
+    {
+        // numer 2/1 (x frame 10 / 10): 9 pt asks for 18, the 9 pt strike stretched x2 about the pen (2, 4).
+        var rows = Text("A", width: 10, height: 12, before: b => b.Align().U16(0x0010).Point(2, 2).Point(1, 1));
+        Assert.Equal("..####....", rows[0]);
+        Assert.Equal("..####....", rows[3]);
+        Assert.Equal("..........", rows[4]);
     }
 
     [Fact]
@@ -120,9 +159,12 @@ public class TextTests
         var lib = new PictFontLibrary();
         lib.AddFamily(7, "Test Font", Family(7, (9, 0, 1234)));
         lib.AddNfnt(1234, Font9);
-        // The picture names its font 400 "Test Font"; the library knows that family as 7.
-        var rows = Text("A", fonts: lib, before: b => b.Align().U16(0x002C).U16(12).U16(Family).Text("Test Font").Align());
+        // The picture names its font 400 "Test Font"; the library knows that family as 7. The map applies to TxFont
+        // opcodes after the fontName, as the recorder writes them.
+        var rows = Text("A", fonts: lib, beforeFont: b => b.Align().U16(0x002C).U16(12).U16(Family).Text("Test Font").Align());
         Assert.Equal("..##......", rows[1]);
+        rows = Text("A", fonts: lib, before: b => b.Align().U16(0x002C).U16(12).U16(Family).Text("Test Font").Align());
+        Assert.Equal("..........", rows[1]);
     }
 
     [Fact]
@@ -132,7 +174,7 @@ public class TextTests
             ("STR ", 1, null, new byte[] { 0 }));
         var lib = new PictFontLibrary();
         Assert.Equal(2, lib.AddResourceFork(fork));
-        var rows = Text("A", fonts: lib, before: b => b.Align().U16(0x002C).U16(16).U16(Family).Text("Suitcase Font").Align());
+        var rows = Text("A", fonts: lib, beforeFont: b => b.Align().U16(0x002C).U16(16).U16(Family).Text("Suitcase Font").Align());
         Assert.Equal("..##......", rows[1]);
     }
 
@@ -164,7 +206,7 @@ public class TextTests
         lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (12, 0, 2)));
         lib.AddNfnt(1, Font9);
         lib.AddNfnt(2, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
-        FontSelection Swap(int size) => FontManager.Swap(lib, Family, size, 0, (1, 1), (1, 1), 0)!;
+        FontSelection Swap(int size) => FontManager.Swap(lib, Family, size, 0, (1, 1), (1, 1), 0, false)!;
 
         Assert.Equal(3, Swap(9).Font.Ascent);
         Assert.Equal(4, Swap(12).Font.Ascent);
@@ -181,10 +223,60 @@ public class TextTests
         lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (9, 1, 2)));
         lib.AddNfnt(1, Font9);
         lib.AddNfnt(2, Font9);
-        var bold = FontManager.Swap(lib, Family, 9, 1, (1, 1), (1, 1), 0)!;
-        var boldItalic = FontManager.Swap(lib, Family, 9, 3, (1, 1), (1, 1), 0)!;
+        var bold = FontManager.Swap(lib, Family, 9, 1, (1, 1), (1, 1), 0, false)!;
+        var boldItalic = FontManager.Swap(lib, Family, 9, 3, (1, 1), (1, 1), 0, false)!;
 
         Assert.Equal((0, 0), (bold.Bold, bold.Extra));
         Assert.Equal((0, 8), (boldItalic.Bold, boldItalic.Italic));
+    }
+
+    [Fact]
+    public void FontManager_StyleVariant_ScoresSubsetsItalicOverBold()
+    {
+        // Bold + italic asked, plain / bold / italic strikes: italic scores 8, bold 4, so bold is synthesized.
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (9, 1, 2), (9, 2, 3)));
+        lib.AddNfnt(1, Font9);
+        lib.AddNfnt(2, Font9);
+        lib.AddNfnt(3, Font9);
+        var s = FontManager.Swap(lib, Family, 9, 3, (1, 1), (1, 1), 0, false)!;
+        Assert.Equal((1, 0, 1), (s.Bold, s.Italic, s.CurStyle));
+    }
+
+    [Fact]
+    public void FontManager_NearestSize_TiesGoToTheLarger()
+    {
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (13, 0, 2)));
+        lib.AddNfnt(1, Font9);
+        lib.AddNfnt(2, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
+        Assert.Equal(4, FontManager.Swap(lib, Family, 11, 0, (1, 1), (1, 1), 0, false)!.Font.Ascent);
+    }
+
+    [Fact]
+    public void FontManager_OldStyleFonts_ScanUpwardBeforeDownward()
+    {
+        // No FOND: 10 pt is not 9 pt's neighbour first - the scan goes 11, 12 before 9.
+        var lib = new PictFontLibrary();
+        lib.AddFont(Family * 128 + 9, Font9);
+        lib.AddFont(Family * 128 + 12, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
+        var s = FontManager.Swap(lib, Family, 10, 0, (1, 1), (1, 1), 0, false)!;
+        Assert.Equal(4, s.Font.Ascent);
+        Assert.Equal((213, 213), s.Numer);                 // 10 / 12 as 8.8, rounded
+    }
+
+    [Fact]
+    public void FontManager_Widths_ExtraOnNonZeroWidthsAndCarriageReturnZero()
+    {
+        var lib = new PictFontLibrary();
+        lib.AddFont(Family * 128 + 9, Build(3, 2, 0, 1, new[]
+        {
+            new Glyph('\r', 5, 0, "#"), new Glyph(' ', 2, 0), new Glyph('A', 3, 0, "##"), new Glyph('B', 0, 0, "#"),
+        }, missing: new Glyph('\0', 2, 0, "#")));
+        var s = FontManager.Swap(lib, Family, 9, 1, (1, 1), (1, 1), 0, false)!;   // bold: extra 1
+        Assert.Equal(4 << 16, s.Widths['A']);
+        Assert.Equal(0, s.Widths['B']);                    // zero widths get no extra
+        Assert.Equal(3 << 16, s.Widths['Z']);              // the missing symbol's width does
+        Assert.Equal(0, s.Widths['\r']);
     }
 }

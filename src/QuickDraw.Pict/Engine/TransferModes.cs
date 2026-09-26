@@ -20,7 +20,7 @@ namespace QuickDraw.Pict
     internal static class TransferModes
     {
         public const int SrcCopy = 0, SrcOr = 1, SrcXor = 2, SrcBic = 3;
-        public const int PatCopy = 8, PatXor = 10;
+        public const int PatCopy = 8, PatXor = 10, PatBic = 11;
         public const int Blend = 32, AddPin = 33, AddOver = 34, SubPin = 35, Transparent = 36, AddMax = 37, SubOver = 38, AdMin = 39;
         public const int GrayishTextOr = 49, Hilite = 50, DitherCopy = 64;
 

@@ -1,115 +1,195 @@
 using System;
+using System.Collections.Generic;
 
 namespace QuickDraw.Pict
 {
-    // QuickDraw's character generator (DrText): characters are OR-ed into an off-screen 1-bit buffer at 16.16
-    // character locations, the buffer is then emboldened, slanted and underlined, and transferred to the port with
-    // the text mode through StretchBits (scaled when the font was stretched), after an optional shadow/outline pass.
+    // The Macintosh ROM's character generator (DrText, 1-bit strikes into a color port): characters are OR-ed into an
+    // off-screen 1-bit buffer at 16.16 character locations, the buffer is emboldened, slanted, underlined and (for
+    // shadow and outline) turned into its shadow, then transferred to the port with the text mode by one StretchBits
+    // (scaled when the Font Manager stretches the strike).
     //
-    // Geometry: textRect spans the pen location to pen + width (plus 32 pixels of slop for the Boolean or/xor/bic
-    // modes), from pen.v - ascent for the strike's height. The buffer starts 32 pixels left of the 16-pixel word
-    // holding the pen and is whole longs wide, at least one long wider than textRect.
+    // Geometry: textRect runs from pen.v - ascent for the strike's height, and from the pen (less any negative
+    // first-character kerning: the ROM looks the first character up by its raw code, not code - firstChar) to the
+    // integer part of the fixed pen plus the text width - no slop, so ink past the final pen position is clipped -
+    // widened for styles by the italic lean and bold/shadow thickness (summed in a byte, as the ROM does). The buffer
+    // starts at the long-aligned pixel at or left of textRect and is two longs wider than it. Characters start at the
+    // pen's own fraction; spaces advance by the space width only, other characters by their width plus the
+    // character extra.
+    //
+    // Styles, as the ROM: bold smears the buffer (one bit stream, rows back to back) right one pixel per bold pixel;
+    // italic shifts each row right by (rows below * italic) / 16; underline fills the row below the baseline across
+    // the whole buffer except one pixel around ink in the baseline row and the two below it (descent 2 or more);
+    // shadow/outline smears a 4-row-taller copy right and down (shadow & 3) + 1 times, XORs the glyphs out of it one
+    // pixel right and down, and draws only that ring, one pixel up-left - a color port leaves the letters' inside
+    // untouched.
+    //
+    // txMode: the pattern bit (8) is cleared; bit 6 (mask) makes the glyph bits a mask for the transfer.
     internal static class TextDrawer
     {
-        public static void Draw(PictBitmap canvas, FontSelection s, ReadOnlySpan<byte> text, int penH, int penV,
-            int textMode, Region? clip, bool hilitePending, in PortColors colors)
+        // Draws the text with the pen at (penH, penV) + penFrac / 65536; returns the pen's new fraction.
+        public static int Draw(PictBitmap canvas, FontSelection s, ReadOnlySpan<byte> text, int penH, int penV,
+            int penFrac, int charExtra, int textMode, Region? clip, bool hilitePending, in PortColors colors)
         {
-            if (text.Length == 0) return;
+            penFrac &= 0xFFFF;
+            if (text.Length == 0) return penFrac;
             var f = s.Font;
-            int fixedWidth = 0;
-            foreach (byte c in text) fixedWidth += s.Widths[c];
-            int width = (short)(fixedWidth >> 16);
 
-            int mode3 = textMode & 7;
-            var textRect = new PictRect(penV - f.Ascent, penH, penV - f.Ascent + f.RectHeight,
-                penH + width + (mode3 != 0 && mode3 <= 3 ? 32 : 0));
-            var dstRect = textRect;
+            // Character extra (Fixed per point) in strike pixels: x size x text scale x FOutDenom / FOutNumer.
+            int cx = charExtra;
+            if (cx != 0)
+                cx = FixedMath.FixMul(FixedMath.FixMul(cx, s.Size << 16), FixedMath.FixMul(
+                    FixedMath.FixRatio((short)s.InNumer.h, (short)s.InDenom.h), FixedMath.FixRatio((short)s.Denom.h, (short)s.Numer.h)));
+
+            int width = 0;                                    // StdTxMeas's FixTxWid
+            foreach (byte c in text) width = unchecked(width + s.Widths[c] + (c == ' ' ? 0 : cx));
+
+            int mode = textMode & ~8 & 0xFFFF;
+            bool masked = (mode & 0x40) != 0;
+            mode &= ~0x40;
+
+            // textRect.
+            int kern = 0;
+            if (f.KernMax < 0)
+            {
+                int ow = f.RawOffsetWidth(text[0]);
+                if (ow == -1) ow = f.RawOffsetWidth(0);
+                int offset = ((ow >> 8) & 0xFF) + f.KernMax;
+                if (offset <= 0) kern = offset;
+            }
+            int penFixed = unchecked((penH << 16) | penFrac);
+            int right = (short)((uint)unchecked(penFixed + width) >> 16);
+            if (s.CurStyle != 0)
+            {
+                int lean = (short)(ushort)((uint)(ushort)(short)(sbyte)s.Italic * (ushort)(f.Ascent - 1)) >> 4;
+                int slop = (sbyte)(lean + s.Bold - s.Extra);
+                int shadow = (sbyte)s.Shadow;
+                right = (short)(right + slop + (shadow >= 4 ? 4 : shadow == 0 ? 0 : shadow + 1));
+                kern = (short)(kern - ((short)(ushort)((uint)(s.Italic & 0xFF) * (ushort)f.Descent) >> 4));
+            }
+            int top = (short)(penV - f.Ascent);
+            var textRect = new PictRect(top, (short)(penH + kern), (short)(top + f.RectHeight), right);
+
+            // Scaling: the whole buffer is stretched once from (pen + denom) to (pen + numer).
             bool stretch = s.Numer != s.Denom;
-            PictRect fromRect = default, toRect = default;
+            PictRect fromRect = default, toRect = default, dstRect = textRect;
+            int advance = width;
             if (stretch)
             {
+                advance = (int)((ulong)(uint)width * (ushort)s.Numer.h / (ushort)s.Denom.h);
                 toRect = new PictRect(penV, penH, penV + s.Numer.v, penH + s.Numer.h);
                 fromRect = new PictRect(penV, penH, penV + s.Denom.v, penH + s.Denom.h);
                 dstRect = PictureMapping.MapRect(textRect, fromRect, toRect);
             }
+            int newFrac = (penFrac + advance) & 0xFFFF;
 
-            // Off-screen buffer: whole longs, word-aligned 32 pixels left of the text.
-            int bufLeft = (textRect.Left & ~15) - 32;
+            // The buffer: whole longs from the long-aligned pixel at or left of textRect, plus one long of slop after
+            // it (which bold smears into and the shadow reads back).
+            int bufLeft = (short)(textRect.Left & ~31);
             int rowLongs = ((ushort)(textRect.Right - bufLeft) >> 5) + 2;
             int bufWidth = rowLongs * 32, height = f.RectHeight;
-            if (height <= 0) return;
-            var buffer = new bool[bufWidth * height];
+            if (height <= 0) return newFrac;
+            int length = bufWidth * height;
+            var buffer = new bool[length + 32];
 
-            // Characters. Spaces only advance; a missing character draws the missing symbol (skipped if the font
-            // has none), a character with an empty image only advances.
-            long charLoc = ((long)(penH + f.KernMax - bufLeft) << 16) | 0x8000;
+            int charLoc = unchecked(((penH + f.KernMax - bufLeft) << 16) | penFrac);
+            int span = f.LastChar - f.FirstChar;
             foreach (byte c in text)
             {
                 if (c == ' ')
                 {
-                    charLoc += s.Widths[' '];
+                    charLoc = unchecked(charLoc + s.Widths[' ']);
                     continue;
                 }
-                int index = c - f.FirstChar;
-                int ow = index >= 0 && c <= f.LastChar ? f.OffsetWidths[index] : -1;
-                if (ow < 0)
+                int step = unchecked(s.Widths[c] + cx);
+                int index = (ushort)(c - f.FirstChar);
+                int ow = index <= (ushort)span ? f.OffsetWidths[index] : -1;
+                if (ow == -1)
                 {
                     index = f.MissingIndex;
                     ow = f.OffsetWidths[index];
-                    if (ow < 0) continue;
+                    if (ow == -1) continue;                    // no missing symbol: skipped without advancing
                 }
-                int dstLeft = (ow >> 8) + (short)(charLoc >> 16);
-                charLoc += s.Widths[c];
-                int srcLeft = f.Locations[index], bits = f.Locations[index + 1] - srcLeft;
+                int dstLeft = (short)(((ow >> 8) & 0xFF) + (short)(charLoc >> 16));
+                charLoc = unchecked(charLoc + step);
+                int srcLeft = f.Locations[index], bits = (short)(f.Locations[index + 1] - srcLeft);
                 if (bits <= 0) continue;
-                int top = 0, rows = height;
+                int rowTop = 0, rows = height & 0xFF;
                 if (f.Heights != null)
                 {
-                    top = f.Heights[index] >> 8;
+                    rowTop = (f.Heights[index] >> 8) & 0xFF;
                     rows = f.Heights[index] & 0xFF;
                 }
-                for (int y = top; y < top + rows && y < height; y++)
+                for (int y = rowTop; y < rowTop + rows && y < height; y++)
                     for (int x = 0; x < bits; x++)
                         if (f.StrikeBit(y, srcLeft + x))
                         {
-                            int bx = dstLeft + x;
-                            if (bx >= 0 && bx < bufWidth) buffer[y * bufWidth + bx] = true;
+                            long at = (long)y * bufWidth + dstLeft + x;
+                            if (at >= 0 && at < buffer.Length) buffer[at] = true;
                         }
             }
-            int lastRight = (short)(charLoc >> 16) - f.KernMax;
 
-            for (int i = 0; i < s.Bold; i++) SmearRight(buffer);
-            if (s.Italic != 0) Slant(buffer, bufWidth, height, s.Italic);
-            if (s.UlThick != 0) Underline(buffer, bufWidth, f.Ascent, f.Descent, lastRight);
+            for (int i = 0; i < (s.Bold & 0xFF); i++) SmearRight(buffer, buffer.Length);
+            if ((s.Italic & 0xFF) != 0) Slant(buffer, bufWidth, height, s.Italic & 0xFF);
+            if (s.UlThick != 0) Underline(buffer, bufWidth, height, f.Ascent, f.Descent);
 
-            var bitmapBounds = new PictRect(textRect.Top, bufLeft, textRect.Bottom, textRect.Right);
             if (s.Shadow != 0)
             {
-                // Shadow buffer: the text 4 rows taller, emboldened right and down (shadow & 3) + 1 times, drawn
-                // with the text mode one pixel up-left; the text itself is then XOR-ed over it.
-                var shadow = new bool[bufWidth * (height + 4)];
-                Array.Copy(buffer, shadow, buffer.Length);
                 int passes = (s.Shadow & 3) + 1;
-                for (int i = 0; i < passes; i++) SmearRight(shadow);
-                for (int i = 0; i < passes; i++) SmearDown(shadow, bufWidth, height + 4);
+                int shadowHeight = height + 4;
+                var shadow = new bool[bufWidth * shadowHeight];
+                Array.Copy(buffer, shadow, length);
+                for (int i = 0; i < passes; i++) SmearRight(shadow, length + 32);
+                for (int i = 0; i < passes; i++) SmearDown(shadow, bufWidth, shadowHeight);
+                for (int j = length + 31; j >= 1; j--)       // XOR the glyphs out, one pixel right and down
+                    if (buffer[j - 1]) shadow[bufWidth + j] = !shadow[bufWidth + j];
                 var srcRect = new PictRect(textRect.Top, textRect.Left, textRect.Bottom + 4, textRect.Right);
                 var shadowDst = new PictRect(srcRect.Top - 1, srcRect.Left - 1, srcRect.Bottom - 1, srcRect.Right - 1);
                 if (stretch) shadowDst = PictureMapping.MapRect(shadowDst, fromRect, toRect);
-                Bits.CopyBits(canvas, ToPixMap(shadow, bufWidth, height + 4,
-                        new PictRect(bitmapBounds.Top, bitmapBounds.Left, bitmapBounds.Bottom + 4, bitmapBounds.Right)),
-                    srcRect, shadowDst, mode3, clip, hilitePending, colors, false);
-                Bits.CopyBits(canvas, ToPixMap(buffer, bufWidth, height, bitmapBounds), textRect, dstRect,
-                    TransferModes.SrcXor, clip, false, colors, false);
-                return;
+                var pix = ToPixMap(shadow, bufWidth, shadowHeight, new PictRect(textRect.Top, bufLeft, textRect.Bottom + 4, textRect.Right));
+                Blit(canvas, pix, srcRect, shadowDst, mode, masked, clip, hilitePending, colors);
+                return newFrac;
             }
-            Bits.CopyBits(canvas, ToPixMap(buffer, bufWidth, height, bitmapBounds), textRect, dstRect, textMode, clip,
-                hilitePending, colors, false);
+            Blit(canvas, ToPixMap(buffer, bufWidth, height, new PictRect(textRect.Top, bufLeft, textRect.Bottom, textRect.Right)),
+                textRect, dstRect, mode, masked, clip, hilitePending, colors);
+            return newFrac;
         }
 
-        // Bold: the buffer as one bit stream (rows back to back) OR-ed with itself shifted right one pixel.
-        private static void SmearRight(bool[] b)
+        // StretchBits with the text mode; a masked mode uses the bits themselves as the mask (so only the glyphs'
+        // pixels are touched).
+        private static void Blit(PictBitmap canvas, PixMap bits, PictRect srcRect, PictRect dstRect, int mode, bool masked,
+            Region? clip, bool hilitePending, in PortColors colors)
         {
-            for (int i = b.Length - 1; i > 0; i--)
+            if (masked)
+            {
+                var mask = MaskRegion(bits, srcRect, dstRect);
+                clip = clip == null ? mask : clip.Intersect(mask);
+            }
+            Bits.CopyBits(canvas, bits, srcRect, dstRect, mode, clip, hilitePending, colors, false);
+        }
+
+        private static Region MaskRegion(PixMap bits, PictRect srcRect, PictRect dstRect)
+        {
+            if (dstRect.IsEmpty) return Region.Empty;
+            var scratch = new PictBitmap(dstRect.Width, dstRect.Height);
+            var black = new PictColor(0, 0, 0);
+            Bits.CopyBits(scratch, bits, srcRect, new PictRect(0, 0, dstRect.Height, dstRect.Width), TransferModes.SrcCopy,
+                null, false, new PortColors(black, new PictColor(255, 255, 255), default, default), false);
+            var rows = new SortedDictionary<int, List<int>>();
+            for (int y = 0; y < scratch.Height; y++)
+                for (int x = 0; x < scratch.Width; x++)
+                    if (scratch[x, y] == black)
+                    {
+                        if (!rows.TryGetValue(y + dstRect.Top, out var runs)) rows[y + dstRect.Top] = runs = new List<int>();
+                        runs.Add(x + dstRect.Left);
+                        runs.Add(x + dstRect.Left + 1);
+                    }
+            return Region.FromScanlines(rows);
+        }
+
+        // ROXR.L #1 / OR over the first `bits` of the stream: each set bit also sets the one after it.
+        private static void SmearRight(bool[] b, int bits)
+        {
+            for (int i = Math.Min(bits, b.Length) - 1; i > 0; i--)
                 if (b[i - 1]) b[i] = true;
         }
 
@@ -120,14 +200,14 @@ namespace QuickDraw.Pict
                     if (b[(y - 1) * width + x]) b[y * width + x] = true;
         }
 
-        // Italic: working up from the bottom row, row k (0 = bottom) moves right by (k * italic) / 16 pixels,
-        // pulling in the (still unslanted) stream bits to its left.
+        // Italic: working up from the second-to-last row, row k (0 = bottom) takes the stream bits (k * italic) / 16
+        // to its left (bits left of the buffer read as 0).
         private static void Slant(bool[] b, int width, int height, int italic)
         {
             int offset = 0;
             for (int y = height - 2; y >= 0; y--)
             {
-                offset = (ushort)(offset + italic);
+                offset += italic;
                 int delta = offset >> 4;
                 int start = y * width;
                 for (int x = width - 1; x >= 0; x--)
@@ -138,22 +218,17 @@ namespace QuickDraw.Pict
             }
         }
 
-        // Underline one row below the baseline, broken one pixel around any ink in the baseline row and the two below
-        // it, and ending at the final pen position. Needs a descent of at least 2.
-        private static void Underline(bool[] b, int width, int ascent, int descent, int lastRight)
+        // Underline the row below the baseline row, except one pixel around ink in the baseline row and the two below.
+        private static void Underline(bool[] b, int width, int height, int ascent, int descent)
         {
             if (descent < 2) return;
-            int r0 = ascent, r1 = ascent + 1, r2 = descent == 2 ? r1 : ascent + 2;
-            int height = b.Length / width;
-            if (r2 >= height) return;
+            int r0 = ascent, r1 = ascent + 1, r2 = descent == 2 ? ascent : ascent + 2;
+            if (r0 < 0 || r1 >= height) return;
+            bool Ink(int row, int x) => row < height && b[row * width + x];
             var ink = new bool[width];
+            for (int x = 0; x < width; x++) ink[x] = Ink(r0, x) || Ink(r1, x) || Ink(r2, x);
             for (int x = 0; x < width; x++)
-                ink[x] = b[r0 * width + x] || b[r1 * width + x] || b[r2 * width + x];
-            var spread = new bool[width];
-            for (int x = 0; x < width; x++)
-                spread[x] = ink[x] || (x > 0 && ink[x - 1]) || (x + 1 < width && ink[x + 1]);
-            for (int x = 0; x < width && x < lastRight; x++)
-                if (!spread[x]) b[r1 * width + x] = true;
+                if (!(ink[x] || (x > 0 && ink[x - 1]) || (x + 1 < width && ink[x + 1]))) b[r1 * width + x] = true;
         }
 
         private static PixMap ToPixMap(bool[] bits, int width, int height, PictRect bounds)

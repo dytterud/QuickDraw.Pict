@@ -100,7 +100,12 @@ namespace QuickDraw.Pict
         // A strike by resource id: NFNT first, then FONT, as the Font Manager looks them up.
         internal BitmapFont? Strike(int resourceId) => Load(true, resourceId) ?? Load(false, resourceId);
 
-        internal BitmapFont? OldStyleStrike(int familyId, int size) => Load(false, familyId * 128 + size);
+        // An old-style FONT by family and size; the Font Manager treats a FONT under 0x24 bytes as missing.
+        internal BitmapFont? OldStyleStrike(int familyId, int size)
+        {
+            int id = familyId * 128 + size;
+            return font.TryGetValue(id, out var data) && data.Length >= 0x24 ? Load(false, id) : null;
+        }
 
         private BitmapFont? Load(bool isNfnt, int id)
         {

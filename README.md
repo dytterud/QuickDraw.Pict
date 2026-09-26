@@ -51,9 +51,10 @@ PictWriter.Write(stream, bitmap, new PictWriteOptions { Format = PictPixelFormat
 - **Bitmaps** (CopyBits): 1/2/4/8-bit indexed and 16/32-bit direct pixel maps in every packing, stretched or shrunk from
   the source to the destination rect like QuickDraw's StretchBits, with mask regions and fore/back colorizing.
 - **Text**: with a `PictFontLibrary` of `FOND` / `NFNT` / `FONT` resources (from a font suitcase, the System file or an
-  application), text is drawn by QuickDraw's character generator: bold, italic, underline, outline, shadow, condense,
-  extend, space extra, substituted sizes stretched. No Apple fonts are included; without a matching font, text goes to
-  an `IPictTextFallback` (the ImageSharp plugin renders it with SixLabors.Fonts).
+  application), text is drawn by the Font Manager and character generator of the Macintosh ROM: font and size
+  substitution, bold, italic, underline, outline, shadow, condense, extend, space and character extra, fractional
+  widths, text ratios, font-name mapping, pen fractions. No Apple fonts are included; without a matching font (or for
+  TrueType-only families), text goes to an `IPictTextFallback` (the ImageSharp plugin renders it with SixLabors.Fonts).
 - **QuickTime images**: `raw `, `rle ` (Animation), `rpza` (Road Pizza), `smc ` (Graphics), `cvid` (Cinepak), `8BPS`,
   `yuv2`, `YVU9`, `tga ` and `PNTG` are decoded by the core; others go to an `IPictImageCodec`. A decoded image skips
   the picture's "QuickTime is required" fallback.
@@ -66,10 +67,10 @@ ICC profile, as a `.pict` file or a bare picture, splitting images too wide for 
 
 ## Accuracy
 
-Shape rasterization, regions, 1-bit CopyBits scaling and the text character generator match reference
-implementations of the corresponding QuickDraw routines pixel for pixel. The QuickTime codecs match ffmpeg's
-decoders on real and generated samples. Behaviour documented as provisional in the source (font selection details,
-scaling of deeper pixels, color Boolean modes) is still being checked against the Macintosh ROM.
+Picture playback, shape rasterization, regions, CopyBits scaling and transfer modes, pixel data, the Font Manager and
+the text character generator follow the Macintosh ROM (Mac OS ROM $077D), and match reference implementations of the
+corresponding QuickDraw routines pixel for pixel. The QuickTime codecs match ffmpeg's decoders on real and generated
+samples. Not modelled: TrueType text, color bitmap fonts and the Font Manager's FScaleDisable mode.
 
 ## Build
 

@@ -16,6 +16,9 @@ namespace QuickDraw.Pict
         public int[] Locations = Array.Empty<int>();
         public int[] OffsetWidths = Array.Empty<int>();   // -1 = missing; else offset << 8 | width
         public int[]? Heights;                           // top << 8 | height, when the font has a height table
+        public int[]? FractionalWidths;                  // 8.8 glyph widths, when the font has a width table (bit 1)
+        public byte[] Data = Array.Empty<byte>();
+        public int OffsetWidthTable;                     // byte offset of the offset/width table in Data
 
         public int RowBytes => RowWords * 2;
         public bool HasHeightTable => (FontType & 1) != 0;
@@ -41,18 +44,24 @@ namespace QuickDraw.Pict
                 Leading = Word(22),
                 RowWords = Word(24),
             };
+            f.Data = data;
             int nDescent = Word(10);
             long owTLoc = (ushort)Word(16);
-            if (nDescent > 0) owTLoc |= (long)nDescent << 16;
+            if (nDescent > 0) owTLoc |= (long)nDescent << 16;    // nDescent >= 0 is owTLoc's high word
 
             int strikeBytes = f.RowBytes * f.RectHeight;
             f.Strike = data.AsSpan(26, Math.Min(strikeBytes, data.Length - 26)).ToArray();
             int entries = f.LastChar - f.FirstChar + 3;
             f.Locations = Words(data, 26 + strikeBytes, entries, unsigned: true);
             long ow = 16 + owTLoc * 2;
+            f.OffsetWidthTable = (int)Math.Min(int.MaxValue, ow);
             f.OffsetWidths = Words(data, (int)ow, entries, unsigned: false);
             long after = ow + entries * 2L;
-            if ((f.FontType & 2) != 0) after += entries * 2L;           // width table
+            if ((f.FontType & 2) != 0)
+            {
+                f.FractionalWidths = Words(data, (int)after, entries, unsigned: true);
+                after += entries * 2L;
+            }
             if (f.HasHeightTable) f.Heights = Words(data, (int)after, entries, unsigned: true);
             return f;
         }
@@ -70,6 +79,14 @@ namespace QuickDraw.Pict
             return result;
         }
 
+        // An offset/width table word by raw index, read from wherever it lands in the resource (0 past its end), as
+        // DrText's first-character kerning reads it.
+        public int RawOffsetWidth(int index)
+        {
+            long o = OffsetWidthTable + 2L * index;
+            return o >= 0 && o + 2 <= Data.Length ? BinaryPrimitives.ReadInt16BigEndian(Data.AsSpan((int)o)) : 0;
+        }
+
         public bool StrikeBit(int row, int column)
         {
             if (row < 0 || row >= RectHeight || column < 0 || column >= RowBytes * 8) return false;
@@ -78,20 +95,30 @@ namespace QuickDraw.Pict
         }
     }
 
-    // A 'FOND' resource: a font family's association table (size, style, font resource id), after the family record
-    // header (ffFlags, ffFamID, ffFirstChar, ffLastChar, ffAscent, ffDescent, ffLeading, ffWidMax, ffWTabOff,
-    // ffKernOff, ffStylOff, ffProperty[9], ffIntl[2], ffVersion) at offset 52.
+    // A 'FOND' resource: the family record header (ffFlags, ffFamID, ffFirstChar, ffLastChar, ffAscent, ffDescent,
+    // ffLeading, ffWidMax, ffWTabOff, ffKernOff, ffStylOff, ffProperty[9], ffIntl[2], ffVersion), then the association
+    // table (size, style, font resource id) at offset 52. ffProperty holds the style extra widths (4.12 per point:
+    // plain, then one per style bit); ffWTabOff locates the family's fractional width tables (a count - 1, then per
+    // table a style word and 4.12 widths for ffFirstChar..ffLastChar + 2).
     internal sealed class FontFamilyRecord
     {
         public readonly record struct Association(int Size, int Style, int FontId);
+        public sealed record WidthTable(int Style, int[] Widths);
 
-        public int FamilyId;
+        public int FamilyId, Flags, FirstChar, LastChar;
+        public int[] Property = new int[9];
         public Association[] Associations = Array.Empty<Association>();
+        public WidthTable[] WidthTables = Array.Empty<WidthTable>();
 
         public static FontFamilyRecord Parse(int familyId, byte[] data)
         {
             var f = new FontFamilyRecord { FamilyId = familyId };
             if (data.Length < 54) return f;
+            f.Flags = BinaryPrimitives.ReadUInt16BigEndian(data);
+            f.FirstChar = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(4));
+            f.LastChar = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(6));
+            for (int i = 0; i < 9; i++) f.Property[i] = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(28 + 2 * i));
+            f.WidthTables = ReadWidthTables(data, BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(16)), f.FirstChar, f.LastChar);
             int count = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(52)) + 1;
             var list = new Association[Math.Max(0, Math.Min(count, (data.Length - 54) / 6))];
             for (int i = 0; i < list.Length; i++)
@@ -102,6 +129,25 @@ namespace QuickDraw.Pict
             }
             f.Associations = list;
             return f;
+        }
+
+        private static WidthTable[] ReadWidthTables(byte[] data, int offset, int firstChar, int lastChar)
+        {
+            if (offset <= 0 || lastChar == 0 || offset + 2 > data.Length) return Array.Empty<WidthTable>();
+            int count = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(offset)) + 1;
+            int entries = lastChar - firstChar + 3;
+            if (count <= 0 || entries <= 0) return Array.Empty<WidthTable>();
+            var tables = new System.Collections.Generic.List<WidthTable>();
+            int o = offset + 2;
+            for (int t = 0; t < count && o + 2 + 2 * entries <= data.Length; t++)
+            {
+                int style = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(o));
+                var widths = new int[entries];
+                for (int i = 0; i < entries; i++) widths[i] = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(o + 2 + 2 * i));
+                tables.Add(new WidthTable(style, widths));
+                o += 2 + 2 * entries;
+            }
+            return tables.ToArray();
         }
     }
 }

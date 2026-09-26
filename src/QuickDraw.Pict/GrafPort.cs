@@ -39,11 +39,18 @@ namespace QuickDraw.Pict
         private (int h, int v)[]? lastPoly;
         private Region lastRegion = Region.Empty;
 
-        public int TextFontId, TextFace, TextSize, TextMode = TransferModes.SrcOr;
+        public int TextFace, TextSize, TextMode = TransferModes.SrcOr;
         public int SpaceExtra;                                    // Fixed
+        public int ChExtra;                                       // the color port's chExtra (4.12 per point)
+        public bool Version1;                                     // the picture's opcodes are version 1
+        private int textFontId, pictureFontId;                    // the port's txFont, and the picture's number for it
+        private int interCharSpacing;                             // LineJustify (Fixed per point)
+        private bool fractEnable;                                 // glyphState: fractional widths
+        private int penFrac = 0x8000, pendingFrac = 0x8000;       // the pen's h fraction; PnLocHFrac for the next text
         private int textH, textV;                                 // text origin, picture space
         private (int h, int v) textNumer, textDenom;              // text scaling, as DrawPicture's play state
         private readonly Dictionary<int, string> fontNames = new Dictionary<int, string>();
+        private readonly Dictionary<int, int> fontMap = new Dictionary<int, int>();
 
         public GrafPort(PictBitmap canvas, PictRect pictureFrame, PictDecodeOptions options)
         {
@@ -89,14 +96,49 @@ namespace QuickDraw.Pict
         public void OvalSize(int h, int v) => (ovalWidth, ovalHeight) = PictureMapping.ScaleSize(h, v, fromRect, toRect);
         public void HiliteMode() => hilitePending = true;
 
-        // TxRatio: the text scale numerator (scaled like a pen size) and denominator.
+        // TxRatio: numer x the destination size over denom x the picture frame size, per axis, both halved together
+        // until they fit in 15 bits.
         public void TextRatio(int numerH, int numerV, int denomH, int denomV)
         {
-            textNumer = PictureMapping.ScaleSize(numerH, numerV, fromRect, toRect);
-            textDenom = (denomH, denomV);
+            var (nh, dh) = Reduce(numerH, toRect.Width, denomH, fromRect.Width);
+            var (nv, dv) = Reduce(numerV, toRect.Height, denomV, fromRect.Height);
+            textNumer = (nh, nv);
+            textDenom = (dh, dv);
         }
+
+        private static (int n, int d) Reduce(int numer, int toSize, int denom, int fromSize)
+        {
+            uint n = (uint)(ushort)numer * (ushort)toSize, d = (uint)(ushort)denom * (ushort)fromSize;
+            while (((n | d) & 0xFFFF8000) != 0)
+            {
+                n >>= 1;
+                d >>= 1;
+            }
+            return ((int)n, (int)d);
+        }
+
         public void DefaultHilite() => HiliteColor = options.HiliteColor;
-        public void FontName(int fontId, string name) => fontNames[fontId] = name;
+
+        // TxFont goes through the font map the fontName opcodes build.
+        public void TextFont(int fontId)
+        {
+            pictureFontId = fontId;
+            textFontId = fontMap.TryGetValue(fontId, out int mapped) ? mapped : fontId;
+        }
+
+        // fontName: when the library has a family of that name (GetFNum, which never maps to 0) numbered differently,
+        // later TxFont opcodes for the picture's number select it. The name also goes to the outline fallback.
+        public void FontName(int fontId, string name)
+        {
+            fontNames[fontId] = name;
+            if (options.Fonts is { } library && library.TryGetFamilyByName(name, out int family) && family != 0
+                && family != fontId)
+                fontMap.TryAdd(fontId, family);
+        }
+
+        public void PnLocHFrac(int fraction) => pendingFrac = fraction & 0xFFFF;
+        public void LineJustify(int interCharacterSpacing) => interCharSpacing = interCharacterSpacing;
+        public void GlyphState(bool fractionalWidths) => fractEnable = fractionalWidths;
 
         // ---- shapes ----
 
@@ -244,6 +286,9 @@ namespace QuickDraw.Pict
         // ---- text ----
 
         // LongText sets the text origin; DH/DV/DHDV text move it from the previous origin. Drawing does not move it.
+        // The pen goes to the mapped origin: in a version 2 picture through MapFixPt, from (v + 1/2, h + the pending
+        // PnLocHFrac fraction), keeping h's fraction as the pen's; in a version 1 picture through MapPt, the pen
+        // keeping the fraction the last text left.
         public void LongText(int h, int v, byte[] text)
         {
             textH = h;
@@ -262,27 +307,83 @@ namespace QuickDraw.Pict
         // use), else the outline text fallback. A fontName opcode maps the picture's font number to a family by name.
         private void DrawText(byte[] text)
         {
+            int fraction = pendingFrac;
+            pendingFrac = 0x8000;
+            int x, y;
+            if (Version1) (x, y) = MapPoint(textH, textV);
+            else
+            {
+                int fh = MapFixed(unchecked((textH << 16) | fraction), fromRect.Left, fromRect.Right, toRect.Left, toRect.Right);
+                int fv = MapFixed(unchecked((textV << 16) | 0x8000), fromRect.Top, fromRect.Bottom, toRect.Top, toRect.Bottom);
+                (x, y, penFrac) = (fh >> 16, fv >> 16, fh & 0xFFFF);
+            }
             if (text.Length == 0) { Done(); return; }
-            var (x, y) = MapPoint(textH, textV);
-            fontNames.TryGetValue(TextFontId, out var name);
+
+            int mode = TextMode;
+            var colors = Colors;
+            fontNames.TryGetValue(pictureFontId, out var name);
             if (options.Fonts is { } library)
             {
-                int family = name != null && library.TryGetFamilyByName(name, out int byName) ? byName : TextFontId;
-                var font = FontManager.Swap(library, family, TextSize, TextFace, textNumer, textDenom, SpaceExtra);
+                var font = FontManager.Swap(library, textFontId, TextSize, TextFace, textNumer, textDenom, SpaceExtra, fractEnable);
                 if (font != null)
                 {
-                    TextDrawer.Draw(canvas, font, text, x, y, TextMode, clip, hilitePending, Colors);
+                    int charExtra = unchecked(((short)ChExtra << 4) + interCharSpacing);
+                    if (mode == TransferModes.GrayishTextOr)
+                        GrayishText(font, text, x, y, charExtra);
+                    else
+                        penFrac = TextDrawer.Draw(canvas, font, text, x, y, penFrac, charExtra, mode, clip, hilitePending, colors);
                     Done();
                     return;
                 }
             }
             var fallback = options.TextFallback;
             if (fallback == null) { Done(); return; }
-            var mask = fallback.Render(PictReader.MacRomanString(text), new PictTextStyle(TextFontId, TextFace, TextSize, name));
+            var mask = fallback.Render(PictReader.MacRomanString(text), new PictTextStyle(pictureFontId, TextFace, TextSize, name));
             if (mask != null && mask.Width > 0 && mask.Height > 0)
                 Painter.FillMask(canvas, x - mask.OriginX, y - mask.OriginY, mask.Width, mask.Height, mask.Bits,
-                    clip, TextMode, hilitePending, Colors);
+                    clip, mode, hilitePending, colors);
             Done();
         }
+
+        // MapFixPt on one axis: (c - from) x toSize / fromSize (a truncating 64/32-bit divide) + to, in Fixed; an
+        // axis of equal sizes only moves.
+        private static int MapFixed(int c, int fromLo, int fromHi, int toLo, int toHi)
+        {
+            int fromSize = unchecked(((short)fromHi << 16) - ((short)fromLo << 16));
+            int toSize = unchecked(((short)toHi << 16) - ((short)toLo << 16));
+            int d = unchecked(c - ((short)fromLo << 16));
+            if (fromSize != toSize && fromSize != 0) d = unchecked((int)((long)d * toSize / fromSize));
+            return unchecked(d + ((short)toLo << 16));
+        }
+
+        // grayishTextOr on a color port (GetGray): the realized midpoint of the fore and back colors (16-bit
+        // components averaged, + 2 below 0x8000) drawn srcOr when it is nearer the midpoint than half its distance to
+        // either color; else the text srcOr with the gray pattern patBic over its pen-to-width, ascent-to-descent box.
+        private void GrayishText(FontSelection font, byte[] text, int x, int y, int charExtra)
+        {
+            (int r, int g, int b) Wide(PictColor c) => (c.R * 257, c.G * 257, c.B * 257);
+            var fg = Wide(ForeColor);
+            var bk = Wide(BackColor);
+            int Mid(int a, int b) { int m = (a + b) >> 1; return m < 0x8000 ? m + 2 : m; }
+            (int r, int g, int b) mid = (Mid(fg.r, bk.r), Mid(fg.g, bk.g), Mid(fg.b, bk.b));
+            var gray = new PictColor((byte)(mid.r >> 8), (byte)(mid.g >> 8), (byte)(mid.b >> 8));
+            var grayWide = Wide(gray);
+            int Distance((int r, int g, int b) a, (int r, int g, int b) b) =>
+                Math.Max(Math.Abs(a.r - b.r), Math.Max(Math.Abs(a.g - b.g), Math.Abs(a.b - b.b)));
+            if (Distance(grayWide, mid) < Distance(grayWide, bk) / 2 && Distance(grayWide, mid) < Distance(grayWide, fg) / 2)
+            {
+                penFrac = TextDrawer.Draw(canvas, font, text, x, y, penFrac, charExtra, TransferModes.SrcOr, clip,
+                    hilitePending, new PortColors(gray, BackColor, OpColor, HiliteColor));
+                return;
+            }
+            int width = 0;
+            foreach (byte c in text) width = unchecked(width + font.Widths[c]);
+            penFrac = TextDrawer.Draw(canvas, font, text, x, y, penFrac, charExtra, TransferModes.SrcOr, clip,
+                hilitePending, Colors);
+            var box = new PictRect(y - font.Font.Ascent, x, y + font.Font.Descent, x + (width >> 16));
+            Painter.FillRegion(canvas, RegionShapes.Rect(box), clip, Gray, PatternAlign, TransferModes.PatBic, false, Colors, true);
+        }
+
+        private static readonly Pattern Gray = Pattern.FromMono(new byte[] { 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55 });
     }
 }
