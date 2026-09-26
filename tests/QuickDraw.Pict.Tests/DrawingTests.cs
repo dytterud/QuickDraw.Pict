@@ -79,6 +79,28 @@ public class DrawingTests
     }
 
     [Fact]
+    public void PaintOval_FlatOvalIsVerticallyAsymmetric()
+    {
+        // ROM DrawArc: 16x3 gives [2,14) [0,16) [1,15).
+        var bmp = Draw(16, 3, b => b.U16(0x0051).Rect(0, 0, 3, 16));
+        Assert.Equal(new[] { "..############..", "################", ".##############." }, Picture(bmp));
+    }
+
+    [Fact]
+    public void PaintRoundRect_WithZeroOvalHeight_InsetsEveryRowByHalfTheOvalWidth()
+    {
+        var bmp = Draw(10, 3, b => b.U16(0x000B).Point(0, 6).U16(0x0041).Rect(0, 0, 3, 10));
+        Assert.Equal(new[] { "...####...", "...####...", "...####..." }, Picture(bmp));
+    }
+
+    [Fact]
+    public void DitherCopy_DrawsNoOvalButCopiesRects()
+    {
+        var bmp = Draw(4, 2, b => b.U16(0x0008).U16(64).U16(0x0051).Rect(0, 0, 2, 2).U16(0x0031).Rect(0, 2, 2, 4));
+        Assert.Equal(new[] { "..##", "..##" }, Picture(bmp));
+    }
+
+    [Fact]
     public void PenMode_PatOr_OnlyDrawsPatternOnes()
     {
         // pen pattern: left column only; patOr leaves the pattern's 0 bits untouched.

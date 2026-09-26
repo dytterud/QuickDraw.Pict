@@ -244,6 +244,60 @@ public class TextTests
     }
 
     [Fact]
+    public void FixRound_RoundsHalvesAwayFromZeroAndSaturates()
+    {
+        Assert.Equal(new[] { 1, -1, -2, -1, 0, 32767 },
+            new[] { 0x8000, -0x8000, -0x18000, -0x14000, 0x7FFF, 0x7FFFFFFF }.Select(FixedMath.FixRound).ToArray());
+    }
+
+    [Fact]
+    public void FontManager_OutlineEntry_TakesOverWhenNoExactBitmapSize()
+    {
+        // A size-0 (TrueType) entry anywhere: the exact bitmap still wins; otherwise TrueType, never double/half.
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (0, 0, 2)));
+        lib.AddNfnt(1, Font9);
+        Assert.NotNull(FontManager.Swap(lib, Family, 9, 0, (1, 1), (1, 1), 0, false));
+        Assert.Null(FontManager.Swap(lib, Family, 18, 0, (1, 1), (1, 1), 0, false));
+    }
+
+    [Fact]
+    public void FontManager_NearestSizeWithoutItsResource_FallsBackToOldStyleFonts()
+    {
+        // 11 pt: nearest listed 12 has no NFNT; the 9 pt NFNT is not tried - the FONT-id path finds 400/9 instead.
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (12, 0, 2)));
+        lib.AddNfnt(1, Font9);
+        lib.AddFont(Family * 128 + 9, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
+        Assert.Equal(4, FontManager.Swap(lib, Family, 11, 0, (1, 1), (1, 1), 0, false)!.Font.Ascent);
+    }
+
+    [Fact]
+    public void FontManager_FamilyWidthTable_IsReadWithTheStrikesCharacterRange()
+    {
+        // FOND range 31..103, strike range 32..103: the strike's char c takes FOND word c - 32 (shifted by one), the
+        // missing symbol word 72; 0xFFFF means missing. Width = word x 9 pt << 4.
+        var words = Enumerable.Range(1, 75).ToArray();
+        words['g' - ' '] = 0xFFFF;
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, 0, 31, 103, new[] { (0, words) }, (9, 0, 1)));
+        lib.AddNfnt(1, Font9);
+        var s = FontManager.Swap(lib, Family, 9, 0, (1, 1), (1, 1), 0, fractEnable: true)!;
+        Assert.Equal(('A' - ' ' + 1) * 9 << 4, s.Widths['A']);
+        Assert.Equal(73 * 9 << 4, s.Widths['g']);
+        Assert.Equal(73 * 9 << 4, s.Widths[200]);
+    }
+
+    [Fact]
+    public void Text_GrayishTextOr_DrawsTheMidGray()
+    {
+        var b = PictBuilder.V2(0, 0, 7, 10).U16(0x0003).U16(Family).U16(0x000D).U16(9).U16(0x0005).U16(49)
+            .U16(0x0028).Point(4, 2).Text("A").Align().U16(0x00FF);
+        var bmp = PictReader.Decode(b.ToArray(), new PictDecodeOptions { Fonts = Library() });
+        Assert.Equal(new PictColor(0x80, 0x80, 0x80), bmp[2, 1]);
+    }
+
+    [Fact]
     public void FontManager_NearestSize_TiesGoToTheLarger()
     {
         var lib = new PictFontLibrary();

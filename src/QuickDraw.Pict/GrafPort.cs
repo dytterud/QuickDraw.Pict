@@ -206,6 +206,8 @@ namespace QuickDraw.Pict
         private void Shape(int verb, Func<Region> interior, Func<Region> frame, bool viaStretchBits)
         {
             var colors = Colors;
+            // DrawArc (ovals, round rects, arcs) draws nothing with ditherCopy.
+            if (!viaStretchBits && verb <= 1 && (PenMode & TransferModes.DitherCopy) != 0) { Done(); return; }
             switch (verb)
             {
                 case 0: Painter.FillRegion(canvas, frame(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors, viaStretchBits); break;
@@ -358,7 +360,9 @@ namespace QuickDraw.Pict
 
         // grayishTextOr on a color port (GetGray): the realized midpoint of the fore and back colors (16-bit
         // components averaged, + 2 below 0x8000) drawn srcOr when it is nearer the midpoint than half its distance to
-        // either color; else the text srcOr with the gray pattern patBic over its pen-to-width, ascent-to-descent box.
+        // either color; else the text srcOr with the gray pattern patBic over pen.h .. + the StdTxMeas width (integer,
+        // unscaled), pen.v - ascent .. + descent - GetFontInfo's metrics: the strike's, + 1 / + shadow for shadowed
+        // text, scaled by the Font Manager's stretch (rounded half up) but not by the text ratio.
         private void GrayishText(FontSelection font, byte[] text, int x, int y, int charExtra)
         {
             (int r, int g, int b) Wide(PictColor c) => (c.R * 257, c.G * 257, c.B * 257);
@@ -376,11 +380,18 @@ namespace QuickDraw.Pict
                     hilitePending, new PortColors(gray, BackColor, OpColor, HiliteColor));
                 return;
             }
-            int width = 0;
-            foreach (byte c in text) width = unchecked(width + font.Widths[c]);
+            int width = (short)(TextDrawer.Measure(font, text, charExtra) >> 16);
+            int ascent = (byte)font.Font.Ascent, descent = (byte)font.Font.Descent;
+            if (font.Shadow != 0) (ascent, descent) = (ascent + 1, descent + (byte)font.Shadow);
+            if (font.Numer != font.Denom)
+            {
+                uint n = (ushort)font.Numer.v, d = (ushort)font.Denom.v;
+                ascent = (int)(((uint)ascent * n + d / 2) / d);
+                descent = (int)(((uint)descent * n + d / 2) / d);
+            }
             penFrac = TextDrawer.Draw(canvas, font, text, x, y, penFrac, charExtra, TransferModes.SrcOr, clip,
                 hilitePending, Colors);
-            var box = new PictRect(y - font.Font.Ascent, x, y + font.Font.Descent, x + (width >> 16));
+            var box = new PictRect(y - ascent, x, y + descent, x + width);
             Painter.FillRegion(canvas, RegionShapes.Rect(box), clip, Gray, PatternAlign, TransferModes.PatBic, false, Colors, true);
         }
 

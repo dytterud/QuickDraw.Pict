@@ -34,14 +34,8 @@ namespace QuickDraw.Pict
             if (text.Length == 0) return penFrac;
             var f = s.Font;
 
-            // Character extra (Fixed per point) in strike pixels: x size x text scale x FOutDenom / FOutNumer.
-            int cx = charExtra;
-            if (cx != 0)
-                cx = FixedMath.FixMul(FixedMath.FixMul(cx, s.Size << 16), FixedMath.FixMul(
-                    FixedMath.FixRatio((short)s.InNumer.h, (short)s.InDenom.h), FixedMath.FixRatio((short)s.Denom.h, (short)s.Numer.h)));
-
-            int width = 0;                                    // StdTxMeas's FixTxWid
-            foreach (byte c in text) width = unchecked(width + s.Widths[c] + (c == ' ' ? 0 : cx));
+            int cx = CharExtra(s, charExtra);
+            int width = Measure(s, text, charExtra);
 
             int mode = textMode & ~8 & 0xFFFF;
             bool masked = (mode & 0x40) != 0;
@@ -152,6 +146,19 @@ namespace QuickDraw.Pict
             Blit(canvas, ToPixMap(buffer, bufWidth, height, new PictRect(textRect.Top, bufLeft, textRect.Bottom, textRect.Right)),
                 textRect, dstRect, mode, masked, clip, hilitePending, colors);
             return newFrac;
+        }
+
+        // Character extra (Fixed per point) in strike pixels: x size x text scale x FOutDenom / FOutNumer.
+        private static int CharExtra(FontSelection s, int charExtra) => charExtra == 0 ? 0 :
+            FixedMath.FixMul(FixedMath.FixMul(charExtra, s.Size << 16), FixedMath.FixMul(
+                FixedMath.FixRatio((short)s.InNumer.h, (short)s.InDenom.h), FixedMath.FixRatio((short)s.Denom.h, (short)s.Numer.h)));
+
+        // StdTxMeas's FixTxWid: the widths plus the character extra on everything but spaces (unscaled, Fixed).
+        public static int Measure(FontSelection s, ReadOnlySpan<byte> text, int charExtra)
+        {
+            int cx = CharExtra(s, charExtra), width = 0;
+            foreach (byte c in text) width = unchecked(width + s.Widths[c] + (c == ' ' ? 0 : cx));
+            return width;
         }
 
         // StretchBits with the text mode; a masked mode uses the bits themselves as the mask (so only the glyphs'

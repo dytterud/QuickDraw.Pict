@@ -20,12 +20,14 @@ namespace QuickDraw.Pict
     // The Macintosh ROM's Font Manager (FMSwapFont, System 7 bitmap path; screen device, 80 dpi, FScaleDisable off).
     //
     // The size searched for is the requested size scaled horizontally by numer.h / denom.h. A family with a 'FOND'
-    // takes, from its association table, the exact size, else double, else half (even sizes), else the nearest (ties
-    // to the larger), and within that size the exact style, else the best-scoring subset of the requested style (bold
-    // 4, italic 8, underline 1, outline 3, shadow 3, condense 2, extend 1; a style with extra bits scores -1). A family
-    // without one (numbered under 0x200) takes old-style 'FONT' resources: size & 0x7F exact, double (under 64), half
-    // (even), then the sizes above up to 127, then below. A family found nowhere falls back to the application font,
-    // Geneva and the system font. Whatever the chosen strike lacks of the style is synthesized per the ROM's style
+    // takes, from its association table, the exact size; else, with an outline (size 0) entry, TrueType; else double,
+    // else half (even sizes), else the nearest listed size (ties to the larger) - and within a size the exact style,
+    // else the best-scoring subset of the requested style (bold 4, italic 8, underline 1, outline 3, shadow 3,
+    // condense 2, extend 1; a style with extra bits scores -1). Sizes are chosen from the table whether or not their
+    // font resource exists: a missing one moves an exact/double/half choice on to the next step, and ends the search
+    // at the nearest size. Families numbered under 0x200 then try old-style 'FONT' resources: size & 0x7F exact,
+    // double (under 64), half (even), then the sizes above up to 127, then below. A family found nowhere falls back to
+    // the application font, Geneva and the system font. Whatever the chosen strike lacks of the style is synthesized per the ROM's style
     // table (bold +1 smear +1 width, italic 8/16, outline 1 + 1 width, shadow 2 + 2 width, condense -1, extend +1,
     // underline 1/1/1); the remaining stretch to the requested size, times the text scale, is FOutNumer (8.8,
     // rounded). A family asking for it (FOND flags bit 12, or fractional widths on, and bit 13 clear) takes its extra
@@ -84,41 +86,41 @@ namespace QuickDraw.Pict
         private static Found? FromFamily(PictFontLibrary library, FontFamilyRecord fond, int searchSize, int face,
             out bool trueType)
         {
-            trueType = fond.Associations[0].Size == 0;
+            trueType = false;
             var entries = new List<FontFamilyRecord.Association>();
             foreach (var a in fond.Associations)
-                if (a.Size > 0 && (a.Style & 0xFF00) == 0 && library.Strike(a.FontId) != null) entries.Add(a);
-            bool Has(int s) => entries.Exists(a => a.Size == s);
+                if ((a.Style & 0xFF00) == 0) entries.Add(a);
+            bool Has(int s) => s > 0 && entries.Exists(a => a.Size == s);
 
-            int size;
-            if (Has(searchSize)) size = searchSize;
-            else if (Has(searchSize * 2)) size = searchSize * 2;
-            else if ((searchSize & 1) == 0 && Has(searchSize / 2)) size = searchSize / 2;
-            else if (trueType) return null;
-            else
+            // The style variant of a size, loaded (null when its resource is missing).
+            Found? Load(int size)
             {
-                size = 0;
-                int best = int.MaxValue;
+                FontFamilyRecord.Association? chosen = null;
+                int bestScore = int.MinValue;
                 foreach (var a in entries)
                 {
-                    int d = Math.Abs(a.Size - searchSize);
-                    if (d < best || (d == best && a.Size > size)) (best, size) = (d, a.Size);
+                    if (a.Size != size) continue;
+                    int style = a.Style & 0xFF;
+                    if (style == face) { chosen = a; break; }
+                    int score = (style & ~face) != 0 ? -1 : Score(style, VariantScore);
+                    if (score > bestScore) (bestScore, chosen) = (score, a);
                 }
-                if (size == 0) return null;
+                if (chosen is not { } entry || library.Strike(entry.FontId) is not { } strike) return null;
+                return new Found(strike, entry.Size, face & ~(entry.Style & 0xFF), fond);
             }
 
-            FontFamilyRecord.Association? chosen = null;
-            int bestScore = int.MinValue;
+            if (Has(searchSize) && Load(searchSize) is { } exact) return exact;
+            if (entries.Exists(a => a.Size == 0)) { trueType = true; return null; }
+            if (Has(searchSize * 2) && Load(searchSize * 2) is { } doubled) return doubled;
+            if ((searchSize & 1) == 0 && Has(searchSize / 2) && Load(searchSize / 2) is { } half) return half;
+            int nearest = 0, best = int.MaxValue;
             foreach (var a in entries)
             {
-                if (a.Size != size) continue;
-                int style = a.Style & 0xFF;
-                if (style == face) { chosen = a; break; }
-                int score = (style & ~face) != 0 ? -1 : Score(style, VariantScore);
-                if (score > bestScore) (bestScore, chosen) = (score, a);
+                if (a.Size <= 0) continue;
+                int d = Math.Abs(a.Size - searchSize);
+                if (d < best || (d == best && a.Size > nearest)) (best, nearest) = (d, a.Size);
             }
-            if (chosen is not { } entry) return null;
-            return new Found(library.Strike(entry.FontId)!, entry.Size, face & ~(entry.Style & 0xFF), fond);
+            return nearest == 0 ? null : Load(nearest);
         }
 
         // Old-style FONTs (resource id family * 128 + size); nothing of the style is intrinsic.
@@ -185,20 +187,24 @@ namespace QuickDraw.Pict
                 }
             }
 
+            // The family's width table is read from its start for the strike's first..last char (so shifted when
+            // the two ranges start differently), the missing symbol's width after them; 0xFFFF means missing.
             int missing = f.MissingIndex;
             int Width(int index)
             {
-                if (nfntWidths) return f.FractionalWidths![index] << 8;
                 if (fondWidths != null)
                 {
-                    int i = index == missing ? fond!.LastChar - fond.FirstChar + 1 : index + f.FirstChar - fond!.FirstChar;
-                    return i >= 0 && i < fondWidths.Widths.Length ? FixedMath.FixMul(fondWidths.Widths[i] << 4, actual << 16) : 0;
+                    int word = fond!.WidthWord(fondWidths, index);
+                    if (word == 0xFFFF && index != missing) word = fond.WidthWord(fondWidths, missing);
+                    return unchecked((int)((uint)word * (uint)actual << 4));
                 }
+                if (nfntWidths) return f.FractionalWidths![index] << 8;
                 return (f.OffsetWidths[index] & 0xFF) << 16;
             }
             for (int c = 0; c < 256; c++)
             {
-                int index = c >= f.FirstChar && c <= f.LastChar && f.OffsetWidths[c - f.FirstChar] != -1 ? c - f.FirstChar : missing;
+                bool inRange = c >= f.FirstChar && c <= f.LastChar;
+                int index = inRange && (fondWidths != null || f.OffsetWidths[c - f.FirstChar] != -1) ? c - f.FirstChar : missing;
                 int w = Width(index);
                 s.Widths[c] = w != 0 ? w + widthExtra : 0;
             }

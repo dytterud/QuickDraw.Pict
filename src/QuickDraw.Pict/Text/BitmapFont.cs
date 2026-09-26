@@ -103,16 +103,24 @@ namespace QuickDraw.Pict
     internal sealed class FontFamilyRecord
     {
         public readonly record struct Association(int Size, int Style, int FontId);
-        public sealed record WidthTable(int Style, int[] Widths);
+        public sealed record WidthTable(int Style, int Start);   // Start: byte offset of its first width
 
         public int FamilyId, Flags, FirstChar, LastChar;
         public int[] Property = new int[9];
         public Association[] Associations = Array.Empty<Association>();
         public WidthTable[] WidthTables = Array.Empty<WidthTable>();
+        public byte[] Data = Array.Empty<byte>();
+
+        // Width word i of a width table, read on from its start wherever that lands (0 past the resource).
+        public int WidthWord(WidthTable table, int i)
+        {
+            long o = table.Start + 2L * i;
+            return i >= 0 && o + 2 <= Data.Length ? BinaryPrimitives.ReadUInt16BigEndian(Data.AsSpan((int)o)) : 0;
+        }
 
         public static FontFamilyRecord Parse(int familyId, byte[] data)
         {
-            var f = new FontFamilyRecord { FamilyId = familyId };
+            var f = new FontFamilyRecord { FamilyId = familyId, Data = data };
             if (data.Length < 54) return f;
             f.Flags = BinaryPrimitives.ReadUInt16BigEndian(data);
             f.FirstChar = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(4));
@@ -139,13 +147,10 @@ namespace QuickDraw.Pict
             if (count <= 0 || entries <= 0) return Array.Empty<WidthTable>();
             var tables = new System.Collections.Generic.List<WidthTable>();
             int o = offset + 2;
-            for (int t = 0; t < count && o + 2 + 2 * entries <= data.Length; t++)
+            for (int t = 0; t < count && o + 2 <= data.Length; t++)
             {
-                int style = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(o));
-                var widths = new int[entries];
-                for (int i = 0; i < entries; i++) widths[i] = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(o + 2 + 2 * i));
-                tables.Add(new WidthTable(style, widths));
-                o += 2 + 2 * entries;
+                tables.Add(new WidthTable(BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(o)), o + 2));
+                o += 2 + 2 * entries;                                   // stepped with the family's own range
             }
             return tables.ToArray();
         }

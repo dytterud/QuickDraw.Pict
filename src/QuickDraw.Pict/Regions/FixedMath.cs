@@ -29,9 +29,10 @@ namespace QuickDraw.Pict
             return (numer << 16) / denom;
         }
 
-        // FixRound: to the nearest integer, halves up (negative values mirror positive ones).
+        // FixRound: + 0x8000 (x >= 0) or + 0x7FFF (x < 0), then the high word - halves away from zero; saturates at
+        // 32767.
         public static int FixRound(int x) =>
-            (short)(x >= 0 ? (x + 0x8000L) >> 16 : -((-(long)x + 0x8000) >> 16));
+            x >= 0x7FFF8000 ? short.MaxValue : (short)((x + (x >= 0 ? 0x8000 : 0x7FFF)) >> 16);
 
         // tan(a) as Fixed for a = 0..90 degrees, the values QuickDraw's arc code uses (not exactly rounded tangents).
         private static readonly int[] Tangent =

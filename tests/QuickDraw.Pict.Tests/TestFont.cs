@@ -109,15 +109,28 @@ internal static class TestFont
     private static byte[] BE32(int v) => new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v };
 
     // 'FOND' with an association table.
-    public static byte[] Family(int familyId, params (int size, int style, int fontId)[] entries)
+    public static byte[] Family(int familyId, params (int size, int style, int fontId)[] entries) =>
+        Family(familyId, 0, 0, 0, Array.Empty<(int, int[])>(), entries);
+
+    // 'FOND' with flags, a character range and fractional width tables (style, 4.12 words) after the associations.
+    public static byte[] Family(int familyId, int flags, int firstChar, int lastChar, (int style, int[] words)[] widthTables,
+        params (int size, int style, int fontId)[] entries)
     {
         var b = new List<byte>();
         void W(int v) { b.Add((byte)(v >> 8)); b.Add((byte)v); }
-        W(0); W(familyId);
-        for (int i = 0; i < 23; i++) W(0);                                 // header up to ffVersion (offset 50)
+        W(flags); W(familyId); W(firstChar); W(lastChar);
+        for (int i = 0; i < 4; i++) W(0);                                  // ascent, descent, leading, widMax
+        int wTabOff = widthTables.Length == 0 ? 0 : 54 + 6 * entries.Length;
+        W(wTabOff >> 16); W(wTabOff);                                       // ffWTabOff at 16
+        for (int i = 0; i < 15; i++) W(0);                                 // kern/style offsets, properties, intl
         W(0);                                                              // ffVersion at 50
         W(entries.Length - 1);
         foreach (var (size, style, id) in entries) { W(size); W(style); W(id); }
+        if (widthTables.Length > 0)
+        {
+            W(widthTables.Length - 1);
+            foreach (var (style, words) in widthTables) { W(style); foreach (var w in words) W(w); }
+        }
         return b.ToArray();
     }
 }
