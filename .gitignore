@@ -6,3 +6,7 @@
 *.user
 *.suo
 *.nupkg
+
+# Apple fonts for the golden text test are user-supplied
+tests/golden/fonts/
+*.snupkg

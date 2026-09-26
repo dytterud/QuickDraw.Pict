@@ -56,6 +56,28 @@ namespace QuickDraw.Pict
             if (!string.IsNullOrEmpty(familyName) && (resourceId & 127) == 0) familyNames.TryAdd(familyName, resourceId >> 7);
         }
 
+        /// <summary>
+        /// Adds every <c>FOND</c>, <c>NFNT</c> and <c>FONT</c> resource of a Macintosh resource fork (a font
+        /// suitcase, the System file, an application), with the families' names. Other resources are ignored.
+        /// </summary>
+        /// <returns>The number of font resources added.</returns>
+        /// <exception cref="ArgumentException">The data is not a resource fork.</exception>
+        public int AddResourceFork(byte[] resourceFork)
+        {
+            ArgumentNullException.ThrowIfNull(resourceFork);
+            int added = 0;
+            foreach (var (type, id, name, data) in ResourceFork.Read(resourceFork))
+            {
+                switch (type)
+                {
+                    case "FOND": AddFamily(id, name, data); added++; break;
+                    case "NFNT": AddNfnt(id, data); added++; break;
+                    case "FONT": AddFont(id, data, name); added++; break;
+                }
+            }
+            return added;
+        }
+
         internal bool TryGetFamilyByName(string name, out int familyId) => familyNames.TryGetValue(name, out familyId);
 
         internal FontFamilyRecord? Family(int familyId) => families.TryGetValue(familyId, out var f) ? f : null;

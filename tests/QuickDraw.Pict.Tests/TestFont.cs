@@ -51,6 +51,63 @@ internal static class TestFont
 
     private static int ImageWidth(Glyph g) => g.Rows.Length == 0 ? 0 : g.Rows.Max(r => r.Length);
 
+    // A resource fork holding the given resources (one type list entry per type, names in the name list).
+    public static byte[] ResourceFork(params (string type, int id, string? name, byte[] data)[] resources)
+    {
+        var data = new List<byte>();
+        var offsets = new List<int>();
+        foreach (var r in resources)
+        {
+            offsets.Add(data.Count);
+            data.AddRange(BE32(r.data.Length));
+            data.AddRange(r.data);
+        }
+        var names = new List<byte>();
+        var types = resources.Select(r => r.type).Distinct().ToList();
+        var typeList = new List<byte>();
+        var refLists = new List<byte>();
+        typeList.AddRange(BE16(types.Count - 1));
+        int refStart = 2 + 8 * types.Count;
+        foreach (var t in types)
+        {
+            var group = resources.Select((r, i) => (r, i)).Where(x => x.r.type == t).ToList();
+            typeList.AddRange(System.Text.Encoding.ASCII.GetBytes(t));
+            typeList.AddRange(BE16(group.Count - 1));
+            typeList.AddRange(BE16(refStart + refLists.Count));
+            foreach (var (r, i) in group)
+            {
+                refLists.AddRange(BE16(r.id));
+                if (r.name == null) refLists.AddRange(BE16(0xFFFF));
+                else
+                {
+                    refLists.AddRange(BE16(names.Count));
+                    names.Add((byte)r.name.Length);
+                    names.AddRange(System.Text.Encoding.ASCII.GetBytes(r.name));
+                }
+                refLists.Add(0);
+                refLists.Add((byte)(offsets[i] >> 16)); refLists.Add((byte)(offsets[i] >> 8)); refLists.Add((byte)offsets[i]);
+                refLists.AddRange(BE32(0));
+            }
+        }
+        var map = new List<byte>(new byte[24]);
+        int typeListOffset = 28;
+        map.AddRange(BE16(typeListOffset));
+        map.AddRange(BE16(typeListOffset + typeList.Count + refLists.Count));
+        map.AddRange(typeList);
+        map.AddRange(refLists);
+        map.AddRange(names);
+        int dataOffset = 256, mapOffset = dataOffset + data.Count;
+        var fork = new List<byte>();
+        fork.AddRange(BE32(dataOffset)); fork.AddRange(BE32(mapOffset)); fork.AddRange(BE32(data.Count)); fork.AddRange(BE32(map.Count));
+        fork.AddRange(new byte[dataOffset - 16]);
+        fork.AddRange(data);
+        fork.AddRange(map);
+        return fork.ToArray();
+    }
+
+    private static byte[] BE16(int v) => new[] { (byte)(v >> 8), (byte)v };
+    private static byte[] BE32(int v) => new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v };
+
     // 'FOND' with an association table.
     public static byte[] Family(int familyId, params (int size, int style, int fontId)[] entries)
     {

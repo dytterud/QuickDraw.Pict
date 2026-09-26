@@ -6,7 +6,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>QuickDraw.Pict</PackageId>
-    <Description>Dependency-free reader and writer for Apple QuickDraw PICT (v1/v2) images. Decodes to a plain RGBA buffer with a software QuickDraw engine: regions, patterns, pen and transfer modes; text through a pluggable rasterizer.</Description>
+    <Description>Dependency-free reader and writer for Apple QuickDraw PICT (v1, v2 and extended v2) pictures. Decodes to a plain RGBA buffer with a software QuickDraw engine that reproduces the Macintosh's pixels: regions, ovals, arcs, lines and polygons, patterns, pen and transfer modes, CopyBits scaling and masks, bitmap-font text, and QuickTime-compressed images (raw, Animation, Road Pizza, Graphics, Cinepak and more). Writes indexed, 16-bit and 32-bit pictures with resolution and ICC profiles.</Description>
     <PackageTags>pict;quickdraw;macintosh;image;decoder;encoder</PackageTags>
   </PropertyGroup>
 

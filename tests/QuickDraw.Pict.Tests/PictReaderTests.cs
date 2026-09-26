@@ -2,8 +2,7 @@ using Xunit;
 
 namespace QuickDraw.Pict.Tests;
 
-// Library-agnostic core: PictWriter/PictReader round trip, bitmap opcodes, and the IPictRenderer hand-off
-// for the vector/text opcodes the core does not rasterize itself.
+// Library-agnostic core: PictWriter/PictReader round trip and bitmap opcodes.
 public class PictReaderTests
 {
     // Opaque test card: a flat left half (PackBits repeat runs) and a noisy right half (literal runs).

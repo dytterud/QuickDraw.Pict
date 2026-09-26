@@ -126,6 +126,23 @@ public class TextTests
     }
 
     [Fact]
+    public void FontLibrary_LoadsFontsFromAResourceFork()
+    {
+        var fork = ResourceFork(("FOND", 7, "Suitcase Font", Family(7, (9, 0, 5000))), ("NFNT", 5000, null, Font9),
+            ("STR ", 1, null, new byte[] { 0 }));
+        var lib = new PictFontLibrary();
+        Assert.Equal(2, lib.AddResourceFork(fork));
+        var rows = Text("A", fonts: lib, before: b => b.Align().U16(0x002C).U16(16).U16(Family).Text("Suitcase Font").Align());
+        Assert.Equal("..##......", rows[1]);
+    }
+
+    [Fact]
+    public void FontLibrary_RejectsDataThatIsNotAResourceFork()
+    {
+        Assert.Throws<ArgumentException>(() => new PictFontLibrary().AddResourceFork(new byte[8]));
+    }
+
+    [Fact]
     public void Text_FamilyMissingFromTheLibrary_UsesTheTextFallback()
     {
         var fallback = new RecordingFallback();
