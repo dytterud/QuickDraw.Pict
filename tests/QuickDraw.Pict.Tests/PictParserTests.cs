@@ -55,7 +55,9 @@ public class PictParserTests
         { "0x00A2 reserved var16", Op(0x00A2, 0, 1, 5) },
         { "0x00B0 reserved (no data)", Op(0x00B0) },
         { "0x00CF reserved (no data)", Op(0x00CF) },
-        { "0x00D0 reserved var32", Op(0x00D0, 0, 0, 0, 3, 1, 2, 3) },
+        { "0x00D0 reserved var16 (ROM reads a word length)", Op(0x00D0, 0, 3, 1, 2, 3) },
+        { "0x00DF reserved var16 (ROM reads a word length)", Op(0x00DF, 0, 0) },
+        { "0x00E0 reserved var32", Op(0x00E0, 0, 0, 0, 3, 1, 2, 3) },
         { "0x00FE reserved var32", Op(0x00FE, 0, 0, 0, 0) },
         { "0x0100 reserved 2 bytes", Op(0x0100, 1, 2) },
         { "0x02FF version (2 bytes)", Op(0x02FF, 0, 0) },
@@ -199,6 +201,48 @@ public class PictParserTests
             .U16(0x00FF).ToArray();
 
         Assert.Equal(new PictColor(10, 20, 30), PictReader.Decode(pict)[0, 0]);
+    }
+
+    // 32-bit direct pixels, 3 pixels wide (rowBytes 12, packed since >= 8) with the given packType and cmpCount.
+    private static PictBitmap Direct32Row(int packType, int cmpCount, params byte[] pixData) =>
+        PictReader.Decode(PictBuilder.V2(0, 0, 1, 3)
+            .U16(0x009A).U16(0).U16(0xFF).U16(0x800C).Rect(0, 0, 1, 3)
+            .U16(0).U16(packType).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0)
+            .U16(16).U16(32).U16(cmpCount).U16(8).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .Rect(0, 0, 1, 3).Rect(0, 0, 1, 3).U16(0)
+            .Bytes(pixData).Align()
+            .U16(0x00FF).ToArray());
+
+    [Fact]
+    public void DirectBits32_PackType0_IsThreeBytesPerPixelLikePackType2()
+    {
+        var bmp = Direct32Row(0, 3, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+        Assert.Equal(new[] { new PictColor(1, 2, 3), new PictColor(4, 5, 6), new PictColor(7, 8, 9) },
+            new[] { bmp[0, 0], bmp[1, 0], bmp[2, 0] });
+    }
+
+    [Fact]
+    public void DirectBits32_PackType3_UnpacksWordChunkRows()
+    {
+        // Count 7: flag 0xFB repeats the next word 6 times → 12 bytes of 0x0A0B.
+        var bmp = Direct32Row(3, 3, 7 - 3, 0xFB, 0x0A, 0x0B);
+        Assert.Equal(new PictColor(0x0B, 0x0A, 0x0B), bmp[0, 0]);
+    }
+
+    [Fact]
+    public void DirectBits32_PackType5AndUp_DiscardsTheRowsAndLeavesPixelsZero()
+    {
+        var bmp = Direct32Row(5, 3, 2, 0x01, 0x02);
+        Assert.Equal(new PictColor(0, 0, 0), bmp[1, 0]);
+    }
+
+    [Fact]
+    public void DirectBits32_PackType4_OnePlaneLandsOnTheBlueByte()
+    {
+        // cmpCount 1: the single plane is pixel byte 3.
+        var bmp = Direct32Row(4, 1, 4, 0x02, 0x10, 0x20, 0x30);
+        Assert.Equal(new[] { new PictColor(0, 0, 0x10), new PictColor(0, 0, 0x20), new PictColor(0, 0, 0x30) },
+            new[] { bmp[0, 0], bmp[1, 0], bmp[2, 0] });
     }
 
     [Fact]

@@ -141,27 +141,19 @@ namespace QuickDraw.Pict
             return palette;
         }
 
-        // PixData into the in-memory layout (Appendix A): unpacked when packType is 1 or rowBytes < 8; packType 2
-        // drops the pad byte of 32-bit pixels (3 bytes per pixel); otherwise one PackBits scan line per row, preceded
-        // by a byte count (a word when rowBytes > 250). 16-bit rows pack word chunks (packType 3); 32-bit rows pack
-        // component planes (packType 4), each rowBytes/4 wide, alpha plane first when cmpCount is 4. For a 1-bit
-        // BitMap, packing is chosen by the opcode (BitsRect is never packed).
+        // PixData into the in-memory layout (Appendix A): unpacked when packType is 1 or rowBytes < 8; 32-bit data by
+        // packType (ReadDirect32); otherwise one PackBits scan line per row, preceded by a byte count (a word when
+        // rowBytes > 250), 16-bit rows packing word chunks. For a 1-bit BitMap, packing is chosen by the opcode
+        // (BitsRect is never packed).
         public void ReadPixData(BinaryReader b, bool packedOpcode)
         {
             int height = Math.Max(0, Height);
             Data = new byte[RowBytes * height];
             bool unpacked = RowBytes < 8 || (IsPixMap ? PackType == 1 : !packedOpcode);
 
-            if (IsPixMap && PixelSize == 32 && PackType == 2 && RowBytes >= 8)
+            if (IsPixMap && PixelSize == 32 && RowBytes >= 8 && PackType != 1)
             {
-                int pixels = RowBytes / 4;
-                var raw = b.ReadExactly(pixels * 3 * height);
-                for (int y = 0, s = 0; y < height; y++)
-                    for (int x = 0; x < pixels; x++, s += 3)
-                    {
-                        int d = y * RowBytes + 4 * x;
-                        Data[d + 1] = raw[s]; Data[d + 2] = raw[s + 1]; Data[d + 3] = raw[s + 2];
-                    }
+                ReadDirect32(b, height);
                 return;
             }
 
@@ -173,40 +165,62 @@ namespace QuickDraw.Pict
             }
 
             bool sizesAreWords = RowBytes > 250;
-            if (PixelSize == 32)
-            {
-                int comp = RowBytes / 4;
-                int planes = CmpCount == 4 ? 4 : 3;
-                var packed = new byte[comp * planes];
-                for (int y = 0; y < height; y++)
-                {
-                    UnpackRow(b, packed, sizesAreWords, wordChunks: false);
-                    int row = y * RowBytes;
-                    for (int x = 0; x < comp; x++)
-                    {
-                        if (planes == 4)
-                        {
-                            Data[row + 4 * x] = packed[x];
-                            Data[row + 4 * x + 1] = packed[comp + x];
-                            Data[row + 4 * x + 2] = packed[2 * comp + x];
-                            Data[row + 4 * x + 3] = packed[3 * comp + x];
-                        }
-                        else
-                        {
-                            Data[row + 4 * x + 1] = packed[x];
-                            Data[row + 4 * x + 2] = packed[comp + x];
-                            Data[row + 4 * x + 3] = packed[2 * comp + x];
-                        }
-                    }
-                }
-                return;
-            }
-
             var line = new byte[RowBytes];
             for (int y = 0; y < height; y++)
             {
                 UnpackRow(b, line, sizesAreWords, wordChunks: PixelSize == 16);
                 Buffer.BlockCopy(line, 0, Data, y * RowBytes, RowBytes);
+            }
+        }
+
+        // 32-bit packed pixel data, dispatched on packType as the Macintosh ROM's direct pixel reader does:
+        // 0 or 2: rows of 3 bytes per pixel (R, G, B) without row counts, expanded to 0RGB; 3: word-chunk PackBits
+        // rows; 4: component-plane PackBits rows, cmpCount planes rowBytes/4 wide landing on pixel bytes
+        // 4 - cmpCount .. 3 (alpha stays 0 with three planes); 5 and up: the rows are read and discarded, leaving the
+        // pixels zero.
+        private void ReadDirect32(BinaryReader b, int height)
+        {
+            bool sizesAreWords = RowBytes > 250;
+            int pixels = RowBytes / 4;
+            switch (PackType)
+            {
+                case 3:
+                {
+                    var line = new byte[RowBytes];
+                    for (int y = 0; y < height; y++)
+                    {
+                        UnpackRow(b, line, sizesAreWords, wordChunks: true);
+                        Buffer.BlockCopy(line, 0, Data, y * RowBytes, RowBytes);
+                    }
+                    return;
+                }
+                case 4:
+                {
+                    int planes = Math.Clamp(CmpCount, 1, 4), first = 4 - planes;
+                    var packed = new byte[pixels * planes];
+                    for (int y = 0; y < height; y++)
+                    {
+                        UnpackRow(b, packed, sizesAreWords, wordChunks: false);
+                        int row = y * RowBytes;
+                        for (int k = 0; k < planes; k++)
+                            for (int x = 0; x < pixels; x++)
+                                Data[row + 4 * x + first + k] = packed[k * pixels + x];
+                    }
+                    return;
+                }
+                default:
+                    if (PackType >= 5)
+                    {
+                        for (int y = 0; y < height; y++)
+                            b.Skip(sizesAreWords ? b.ReadU16BE() : b.ReadByte());
+                        return;
+                    }
+                    var raw = b.ReadExactly(pixels * height * 3);
+                    for (int i = 0, s = 0; i < pixels * height; i++, s += 3)
+                    {
+                        Data[4 * i + 1] = raw[s]; Data[4 * i + 2] = raw[s + 1]; Data[4 * i + 3] = raw[s + 2];
+                    }
+                    return;
             }
         }
 

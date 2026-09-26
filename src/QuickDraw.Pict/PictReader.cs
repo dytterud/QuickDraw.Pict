@@ -307,7 +307,8 @@ namespace QuickDraw.Pict
             if (op >= 0x009C && op <= 0x009F) { SkipVar16(b); return; }     // reserved
             if (op >= 0x00A2 && op <= 0x00AF) { SkipVar16(b); return; }     // reserved
             if (op >= 0x00B0 && op <= 0x00CF) return;                       // reserved (no data)
-            if (op >= 0x00D0 && op <= 0x00FE) { SkipVar32(b); return; }     // reserved (u32 length + data)
+            if (op >= 0x00D0 && op <= 0x00DF) { SkipVar16(b); return; }     // reserved: the ROM reads a u16 length
+            if (op >= 0x00E0 && op <= 0x00FE) { SkipVar32(b); return; }     // reserved (u32 length + data)
             if (op >= 0x0100 && op <= 0x7FFF) { b.Skip(2 * (op >> 8)); return; }   // $nnXX: 2 * nn bytes
             if (op >= 0x8000 && op <= 0x80FF) return;                       // reserved (no data)
             // 0x8100-0xFFFF: u32 length + data, including 0x8200/0x8201 QuickTime and 0xFFFF.

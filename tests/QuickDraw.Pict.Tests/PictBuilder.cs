@@ -21,6 +21,7 @@ internal sealed class PictBuilder
     public PictBuilder Point(int v, int h) => U16(v).U16(h);
     public PictBuilder Rgb(int r, int g, int b) => U16(r).U16(g).U16(b);
     public PictBuilder Text(string s) { U8(s.Length); bytes.AddRange(Encoding.ASCII.GetBytes(s)); return this; }
+    public PictBuilder Bytes(params byte[] data) { bytes.AddRange(data); return this; }
     public PictBuilder Zeros(int n) { bytes.AddRange(new byte[n]); return this; }
     public PictBuilder Align() => bytes.Count % 2 == 1 ? U8(0) : this;   // v2 opcodes are word-aligned
 
