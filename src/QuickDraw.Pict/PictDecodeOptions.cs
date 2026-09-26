@@ -19,6 +19,12 @@ namespace QuickDraw.Pict
         public PictFontLibrary? Fonts { get; init; }
 
         /// <summary>
+        /// Decodes QuickTime-compressed images whose codec the core lacks (e.g. JPEG, PNG). The core decodes 'raw ',
+        /// 'rle ', 'rpza', 'smc ', 'cvid', '8BPS', 'yuv2', 'YVU9', 'tga ' and 'PNTG' itself.
+        /// </summary>
+        public IPictImageCodec? ImageCodec { get; init; }
+
+        /// <summary>
         /// The highlight color used by hilite-mode drawing (opcode 0x001C) until the picture sets its own
         /// (0x001D). Defaults to Color QuickDraw's standard light cyan (0x9999, 0xCCCC, 0xCCCC).
         /// </summary>

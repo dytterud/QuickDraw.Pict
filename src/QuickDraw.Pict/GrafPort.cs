@@ -219,6 +219,27 @@ namespace QuickDraw.Pict
             Done();
         }
 
+        // ---- QuickTime ----
+
+        // CompressedQuickTime: decompress (built-in codecs, then the caller's) and draw the image where its matrix
+        // puts the source rect, through its transfer mode and mask. Returns that destination (picture space), or null
+        // when the image could not be decoded.
+        public PictRect? QuickTime(byte[] block)
+        {
+            var q = QuickTimeImage.Parse(block);
+            if (q == null) return null;
+            var image = QuickTimeCodecs.Decode(q.Description, q.Data) ?? options.ImageCodec?.Decode(q.Description, q.Data);
+            if (image == null) return null;
+            var mask = q.Mask == null ? null : MapRegion(q.Mask);
+            if (clip != null) mask = mask == null ? clip : mask.Intersect(clip);
+            var source = q.SourceRect.IsEmpty ? new PictRect(0, 0, image.Height, image.Width) : q.SourceRect;
+            var destination = q.DestinationRect();
+            Bits.CopyBits(canvas, QuickTimeImage.ToPixMap(image), source, MapRect(destination), q.Mode, mask,
+                hilitePending, Colors, options.PreserveAlpha);
+            Done();
+            return destination;
+        }
+
         // ---- text ----
 
         // LongText sets the text origin; DH/DV/DHDV text move it from the previous origin. Drawing does not move it.

@@ -59,8 +59,11 @@ namespace QuickDraw.Pict
             var canvas = new PictBitmap(Math.Max(1, canvasRect.Width), Math.Max(1, canvasRect.Height)) { Info = info };
             var port = new GrafPort(canvas, bounds, options);
             {
+                PictRect? quickTimeRect = null;           // destination of a QuickTime image drawn by the last opcode
                 while (b.BaseStream.Position < b.BaseStream.Length)
                 {
+                    var justDrawnQuickTime = quickTimeRect;
+                    quickTimeRect = null;
                     cancellationToken.ThrowIfCancellationRequested();
                     if (!v1 && (b.BaseStream.Position & 1) == 1) // v2 opcodes are word-aligned
                         b.BaseStream.Seek(1, SeekOrigin.Current);
@@ -80,7 +83,7 @@ namespace QuickDraw.Pict
                             var pm = PixMap.ReadIndexedHeader(b);
                             var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: (op & 0x01) != 0);
                             pm.ReadPixData(b, packedOpcode: (op & 0x08) != 0);
-                            port.CopyBits(pm, src, dst, mode, mask);
+                            if (dst != justDrawnQuickTime) port.CopyBits(pm, src, dst, mode, mask);
                             break;
                         }
                         case 0x009A:                        // DirectBitsRect
@@ -89,7 +92,7 @@ namespace QuickDraw.Pict
                             var pm = PixMap.ReadDirectHeader(b);
                             var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: op == 0x009B);
                             pm.ReadPixData(b, packedOpcode: true);
-                            port.CopyBits(pm, src, dst, mode, mask);
+                            if (dst != justDrawnQuickTime) port.CopyBits(pm, src, dst, mode, mask);
                             break;
                         }
                         case 0x00A0:                        // ShortComment
@@ -104,6 +107,20 @@ namespace QuickDraw.Pict
                         }
                         case 0x00FF:                        // end of picture
                             return canvas;
+                        case 0x8200:                        // CompressedQuickTime
+                        {
+                            // A decoded image skips the picture's fallback for systems without QuickTime: the drawing
+                            // after a PnSize marker (SkipQuickTimeFallback), or else a bitmap that immediately follows
+                            // into the same rectangle (Photoshop's "QuickTime PICT" placeholder).
+                            var block = b.ReadExactly((int)b.ReadU32BE());
+                            var drawn = port.QuickTime(block);
+                            if (drawn != null)
+                            {
+                                quickTimeRect = drawn;
+                                SkipQuickTimeFallback(b);
+                            }
+                            break;
+                        }
                         default:
                             if (!HandleDrawingOpcode(port, b, op))
                                 SkipOperands(b, op);
@@ -112,6 +129,24 @@ namespace QuickDraw.Pict
                 }
                 return canvas;
             }
+        }
+
+        // QuickTime writes pictures whose compressed image is followed by drawing for systems without QuickTime
+        // ("QuickTime and a ... decompressor are needed"), introduced by a PnSize opcode with v = 0x00AE whose h is the
+        // byte count QuickTime skips once it has drawn the image.
+        private static void SkipQuickTimeFallback(BinaryReader b)
+        {
+            var s = b.BaseStream;
+            long start = s.Position + (s.Position & 1);
+            if (start + 6 > s.Length) return;
+            s.Position = start;
+            if (b.ReadU16BE() == 0x0007 && b.ReadU16BE() == 0x00AE)
+            {
+                int skip = b.ReadU16BE();
+                s.Position = Math.Min(s.Length, s.Position + skip);
+                return;
+            }
+            s.Position = start;
         }
 
         // srcRect, dstRect, mode and (Rgn variants) maskRgn, which sit between a CopyBits PixMap and its PixData.

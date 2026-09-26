@@ -36,6 +36,11 @@ Text is drawn exactly as QuickDraw does when you supply the classic Mac bitmap f
 `PictDecodeOptions.Fonts` (ImageSharp: `PictDecoderOptions.BitmapFonts`). No Apple fonts are included; text in fonts
 the library lacks goes to the outline fallback.
 
+QuickTime-compressed images inside pictures are decoded by the core for `raw `, `rle ` (Animation), `rpza`, `smc `,
+`cvid` (Cinepak), `8BPS`, `yuv2`, `YVU9`, `tga ` and `PNTG`; other codecs go to an `IPictImageCodec`
+(`PictDecodeOptions.ImageCodec`). The ImageSharp plugin supplies one for `jpeg`, `png `, `gif `, `tiff`, `webp` and `WRLE`
+(BMP). A decoded image skips the picture's "QuickTime is required" fallback drawing.
+
 High-resolution (extended v2) pictures decode at their native resolution by default. `Resolution =
 PictResolution.PictureFrame` draws them at their 72 dpi picture frame instead, scaled the way `DrawPicture` does it. That
 includes pen and oval sizes and CopyBits stretching. `PreserveAlpha = true` keeps the alpha channel of 32-bit pixel maps

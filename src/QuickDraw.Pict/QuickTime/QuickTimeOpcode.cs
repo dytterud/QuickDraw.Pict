@@ -1,0 +1,122 @@
+using System;
+using System.Buffers.Binary;
+using System.Text;
+
+namespace QuickDraw.Pict
+{
+    // The CompressedQuickTime opcode (0x8200): u32 data length, then version, a 3x3 matrix (a b u / c d v / h v w;
+    // u, v, w are 2.30 fixed, the rest 16.16), matte size and rect, transfer mode, source rect, accuracy, mask size,
+    // the matte (image description + data), the mask region, and the image description (86 bytes, plus a color table
+    // when clutID is 0, plus atoms) followed by the compressed data.
+    internal sealed class QuickTimeImage
+    {
+        public int[] Matrix = new int[9];
+        public int Mode;
+        public PictRect SourceRect;
+        public Region? Mask;
+        public PictImageDescription Description = null!;
+        public byte[] Data = Array.Empty<byte>();
+
+        public static QuickTimeImage? Parse(byte[] block)
+        {
+            if (block.Length < 2 + 36 + 4 + 8 + 2 + 8 + 4 + 4) return null;
+            var q = new QuickTimeImage();
+            int p = 2;                                                // version
+            int I32() { int v = BinaryPrimitives.ReadInt32BigEndian(block.AsSpan(p)); p += 4; return v; }
+            short I16() { short v = BinaryPrimitives.ReadInt16BigEndian(block.AsSpan(p)); p += 2; return v; }
+            PictRect Rect() { var r = new PictRect(I16(), I16(), I16(), I16()); return r; }
+            for (int i = 0; i < 9; i++) q.Matrix[i] = I32();
+            int matteSize = I32();
+            Rect();                                                   // matte rect
+            q.Mode = (ushort)I16();
+            q.SourceRect = Rect();
+            I32();                                                    // accuracy
+            int maskSize = I32();
+            if (matteSize < 0 || maskSize < 0 || p + (long)matteSize + maskSize > block.Length) return null;
+            p += matteSize;                                           // the matte is not applied
+            if (maskSize > 0)
+            {
+                using var r = new System.IO.BinaryReader(new System.IO.MemoryStream(block, p, maskSize));
+                try { q.Mask = Region.Read(r); } catch (System.IO.EndOfStreamException) { }
+                p += maskSize;
+            }
+            if (p + 86 > block.Length) return null;
+            int idStart = p;
+            int idSize = I32();
+            string codec = Encoding.Latin1.GetString(block, p, 4);
+            p += 4 + 8 + 2 + 2 + 4 + 4 + 4;                           // cType, reserved, version, revision, vendor, qualities
+            int width = (ushort)I16(), height = (ushort)I16();
+            double hRes = I32() / 65536.0, vRes = I32() / 65536.0;
+            I32();                                                    // dataSize
+            I16();                                                    // frameCount
+            int nameLength = Math.Min(block[p], (byte)31);
+            string name = Encoding.Latin1.GetString(block, p + 1, nameLength);
+            p += 32;
+            int depth = I16(), clutId = I16();
+            PictColor[]? table = StandardColorTables.ForId(clutId);
+            if (clutId == 0 && idSize > 86 && p + 8 <= block.Length)
+                table = ReadColorTable(block, p, idStart + idSize);
+            table ??= StandardColorTables.ForDepth(depth);
+            q.Description = new PictImageDescription(codec, width, height, depth, clutId, hRes, vRes, name) { ColorTable = table };
+            int dataStart = idStart + Math.Max(idSize, 86);
+            if (dataStart > block.Length) return null;
+            q.Data = block.AsSpan(dataStart).ToArray();
+            return q;
+        }
+
+        // A ColorTable stored after the image description: ctSeed, ctFlags, ctSize, then (value, r, g, b) entries.
+        private static PictColor[]? ReadColorTable(byte[] block, int p, int end)
+        {
+            int size = BinaryPrimitives.ReadInt16BigEndian(block.AsSpan(p + 6)) + 1;
+            if (size <= 0 || size > 256) return null;
+            var table = new PictColor[size];
+            p += 8;
+            for (int i = 0; i < size && p + 8 <= Math.Min(end, block.Length); i++, p += 8)
+                table[i] = new PictColor(block[p + 2], block[p + 4], block[p + 6]);
+            return table;
+        }
+
+        // Where the matrix puts the source rect, in picture coordinates (scale and translation; a rotated or skewed
+        // image is placed in its bounding box).
+        public PictRect DestinationRect()
+        {
+            (int h, int v) Map(int x, int y)
+            {
+                long h = (long)x * Matrix[0] + (long)y * Matrix[3] + Matrix[6];
+                long v = (long)x * Matrix[1] + (long)y * Matrix[4] + Matrix[7];
+                return ((int)((h + 0x8000) >> 16), (int)((v + 0x8000) >> 16));
+            }
+            var r = SourceRect;
+            var a = Map(r.Left, r.Top);
+            var b = Map(r.Right, r.Bottom);
+            var c = Map(r.Right, r.Top);
+            var d = Map(r.Left, r.Bottom);
+            int left = Math.Min(Math.Min(a.h, b.h), Math.Min(c.h, d.h)), right = Math.Max(Math.Max(a.h, b.h), Math.Max(c.h, d.h));
+            int top = Math.Min(Math.Min(a.v, b.v), Math.Min(c.v, d.v)), bottom = Math.Max(Math.Max(a.v, b.v), Math.Max(c.v, d.v));
+            return new PictRect(top, left, bottom, right);
+        }
+
+        // The decoded image as a 32-bit pixel map for CopyBits (alpha kept in the pad byte).
+        public static PixMap ToPixMap(PictBitmap image)
+        {
+            var data = new byte[image.Width * image.Height * 4];
+            var px = image.Pixels;
+            for (int i = 0; i < image.Width * image.Height; i++)
+            {
+                data[4 * i] = px[4 * i + 3];
+                data[4 * i + 1] = px[4 * i];
+                data[4 * i + 2] = px[4 * i + 1];
+                data[4 * i + 3] = px[4 * i + 2];
+            }
+            return new PixMap
+            {
+                Bounds = new PictRect(0, 0, image.Height, image.Width),
+                RowBytes = image.Width * 4,
+                PixelSize = 32,
+                CmpCount = 4,
+                IsPixMap = true,
+                Data = data,
+            };
+        }
+    }
+}

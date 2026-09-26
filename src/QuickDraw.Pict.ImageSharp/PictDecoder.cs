@@ -42,6 +42,7 @@ namespace QuickDraw.Pict.ImageSharp
             {
                 TextFallback = new ImageSharpTextFallback(configuration, options.FontResolver),
                 Fonts = options.BitmapFonts,
+                ImageCodec = new ImageSharpImageCodec(configuration),
                 Resolution = options.Resolution,
                 PreserveAlpha = options.PreserveAlpha,
             };
