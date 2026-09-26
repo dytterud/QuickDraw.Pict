@@ -75,23 +75,25 @@ namespace QuickDraw.Pict
                         case 0x0011:                        // VersionOp mid-stream: 1 = byte opcodes, 2 = word opcodes
                             v1 = b.ReadByte() == 1;          // (v2's trailing 0xFF is eaten by the word alignment)
                             break;
-                        case 0x0090:                        // BitsRect
+                        case 0x0090:                        // BitsRect (read like PackBitsRect: the ROM ignores bit 3)
                         case 0x0091:                        // BitsRgn
                         case 0x0098:                        // PackBitsRect
                         case 0x0099:                        // PackBitsRgn
                         {
                             var pm = PixMap.ReadIndexedHeader(b);
                             var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: (op & 0x01) != 0);
-                            pm.ReadPixData(b, packedOpcode: (op & 0x08) != 0);
+                            pm.ReadPixData(b);
                             if (dst != justDrawnQuickTime) port.CopyBits(pm, src, dst, mode, mask);
                             break;
                         }
+                        case 0x0092:                        // the ROM treats 0x92/0x93 as 0x9A/0x9B
+                        case 0x0093:
                         case 0x009A:                        // DirectBitsRect
                         case 0x009B:                        // DirectBitsRgn
                         {
                             var pm = PixMap.ReadDirectHeader(b);
-                            var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: op == 0x009B);
-                            pm.ReadPixData(b, packedOpcode: true);
+                            var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: (op & 1) != 0);
+                            pm.ReadPixData(b);
                             if (dst != justDrawnQuickTime) port.CopyBits(pm, src, dst, mode, mask);
                             break;
                         }
@@ -340,7 +342,7 @@ namespace QuickDraw.Pict
             if (op >= 0x0078 && op <= 0x007F) return;                       // same poly (no data)
             if (op >= 0x0080 && op <= 0x0087) { SkipRegion(b); return; }    // region
             if (op >= 0x0088 && op <= 0x008F) return;                       // same region (no data)
-            if (op >= 0x0092 && op <= 0x0097) { SkipVar16(b); return; }     // reserved
+            if (op >= 0x0094 && op <= 0x0097) { SkipVar16(b); return; }     // reserved
             if (op >= 0x009C && op <= 0x009F) { SkipVar16(b); return; }     // reserved
             if (op >= 0x00A2 && op <= 0x00AF) { SkipVar16(b); return; }     // reserved
             if (op >= 0x00B0 && op <= 0x00CF) return;                       // reserved (no data)

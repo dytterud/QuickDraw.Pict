@@ -49,7 +49,7 @@ public class PictParserTests
         { "0x007D reserved (no data)", Op(0x007D) },
         { "0x0085 reserved rgn", Op(0x0085, 0, 10, 0, 0, 0, 0, 0, 1, 0, 1) },
         { "0x008D reserved (no data)", Op(0x008D) },
-        { "0x0092 reserved var16", Op(0x0092, 0, 2, 1, 2) },
+        { "0x0094 reserved var16", Op(0x0094, 0, 2, 1, 2) },
         { "0x009C reserved var16", Op(0x009C, 0, 0) },
         { "0x00A0 ShortComment", Op(0x00A0, 0, 130) },
         { "0x00A2 reserved var16", Op(0x00A2, 0, 1, 5) },
@@ -212,6 +212,59 @@ public class PictParserTests
             .Rect(0, 0, 1, 3).Rect(0, 0, 1, 3).U16(0)
             .Bytes(pixData).Align()
             .U16(0x00FF).ToArray());
+
+    [Fact]
+    public void Opcode0x92_IsDirectBitsRect()
+    {
+        // The ROM ignores bit 3 of the bitmap opcodes, so 0x92 is DirectBitsRect (1 pixel, rowBytes 4: unpacked).
+        var pict = PictBuilder.V2(0, 0, 1, 1)
+            .U16(0x0092).U16(0).U16(0xFF).U16(0x8004).Rect(0, 0, 1, 1)
+            .U16(0).U16(1).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0)
+            .U16(16).U16(32).U16(3).U16(8).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .Rect(0, 0, 1, 1).Rect(0, 0, 1, 1).U16(0)
+            .U8(0).U8(10).U8(20).U8(30)
+            .U16(0x00FF).ToArray();
+        Assert.Equal(new PictColor(10, 20, 30), PictReader.Decode(pict)[0, 0]);
+    }
+
+    [Fact]
+    public void BitsRect_WithRowsOf8BytesOrMore_IsReadPacked()
+    {
+        // 0x90 with rowBytes 8: a PackBits row (count 2: repeat 0xFF x 8), exactly like 0x98.
+        var pict = PictBuilder.V2(0, 0, 1, 64).U16(0x0090).U16(8).Rect(0, 0, 1, 64).Rect(0, 0, 1, 64).Rect(0, 0, 1, 64)
+            .U16(0).U8(2).U8(0xF9).U8(0xFF).Align().U16(0x00FF).ToArray();
+        var bmp = PictReader.Decode(pict);
+        Assert.Equal(new PictColor(0, 0, 0), bmp[63, 0]);
+    }
+
+    [Fact]
+    public void IndexedPixMap_PackType1_IsStillPacked()
+    {
+        // 8-bit PixMap, packType 1, rowBytes 8: the ROM ignores packType for indexed data.
+        var b = PictBuilder.V2(0, 0, 1, 8).U16(0x0098).U16(0x8008).Rect(0, 0, 1, 8)
+            .U16(0).U16(1).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0).U16(0).U16(8).U16(1).U16(8).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .U16(0).U16(0).U16(0).U16(1).U16(0).Rgb(0xFFFF, 0, 0).U16(1).Rgb(0, 0, 0xFFFF)   // ctab: 0 red, 1 blue
+            .Rect(0, 0, 1, 8).Rect(0, 0, 1, 8).U16(0)
+            .U8(2).U8(0xF9).U8(1).Align().U16(0x00FF);                                      // 8 x index 1
+        Assert.Equal(new PictColor(0, 0, 255), PictReader.Decode(b.ToArray())[7, 0]);
+    }
+
+    [Fact]
+    public void DirectBits16_PackType0_TakesTheThreeBytePath()
+    {
+        // pixelSize is never checked: a 16-bit map with packType 0 reads rowBytes*height*3/4 bytes as 0RGB longs.
+        var pict = PictBuilder.V2(0, 0, 1, 4)
+            .U16(0x009A).U16(0).U16(0xFF).U16(0x8008).Rect(0, 0, 1, 4)
+            .U16(0).U16(0).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0)
+            .U16(16).U16(16).U16(3).U16(5).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .Rect(0, 0, 1, 4).Rect(0, 0, 1, 4).U16(0)
+            .Bytes(0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC).Align()
+            .U16(0x00FF).ToArray();
+        var bmp = PictReader.Decode(pict);
+        // Data = 00 12 34 56 | 00 78 9A BC read as 16-bit pixels 0x0012, 0x3456, 0x0078, 0x9ABC.
+        Assert.Equal(new PictColor(0, 0, 0x94), bmp[0, 0]);
+        Assert.Equal(new PictColor(0x6B, 0x10, 0xB5), bmp[1, 0]);
+    }
 
     [Fact]
     public void DirectBits32_PackType0_IsThreeBytesPerPixelLikePackType2()

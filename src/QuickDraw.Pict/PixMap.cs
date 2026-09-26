@@ -16,6 +16,7 @@ namespace QuickDraw.Pict
         public int PixelSize = 1;
         public int CmpCount = 1;
         public int PackType;
+        public int PixelType;                        // 0 indexed, 16 direct (RGBDirect)
         public bool IsPixMap;
         public PictColor[] Palette = Array.Empty<PictColor>();
         public byte[] Data = Array.Empty<byte>();
@@ -118,7 +119,7 @@ namespace QuickDraw.Pict
             pm.Bounds = b.ReadRectBE();
             pm.ReadPixMapFields(b);
             pm.Palette = ReadColorTable(b, pm.PixelSize);
-            pm.ReadPixData(b, packedOpcode: true);
+            pm.ReadPixData(b);
             return pm;
         }
 
@@ -131,7 +132,7 @@ namespace QuickDraw.Pict
             b.ReadU32BE();                  // packSize
             b.ReadU32BE();                  // hRes
             b.ReadU32BE();                  // vRes
-            b.ReadU16BE();                  // pixelType
+            PixelType = b.ReadU16BE();
             PixelSize = b.ReadU16BE();
             CmpCount = b.ReadU16BE();
             b.ReadU16BE();                  // cmpSize
@@ -163,26 +164,26 @@ namespace QuickDraw.Pict
             return palette;
         }
 
-        // PixData into the in-memory layout (Appendix A): unpacked when packType is 1 or rowBytes < 8; 32-bit data by
-        // packType (ReadDirect32); otherwise one PackBits scan line per row, preceded by a byte count (a word when
-        // rowBytes > 250), 16-bit rows packing word chunks. For a 1-bit BitMap, packing is chosen by the opcode
-        // (BitsRect is never packed).
-        public void ReadPixData(BinaryReader b, bool packedOpcode)
+        // PixData into the in-memory layout, as the ROM's pixel-data readers (GetPMData / GetDirectPMData) do: rows
+        // under 8 bytes are unpacked; a direct PixMap (pixelType 16) is unpacked for packType 1 and otherwise
+        // dispatched on packType whatever its pixel size (ReadDirect); everything else - BitMaps and indexed PixMaps,
+        // with any packType and under any bitmap opcode - is one PackBits scan line per row, preceded by a byte count
+        // (a word when rowBytes > 250).
+        public void ReadPixData(BinaryReader b)
         {
             int height = Math.Max(0, Height);
             Data = new byte[RowBytes * height];
-            bool unpacked = RowBytes < 8 || (IsPixMap ? PackType == 1 : !packedOpcode);
+            bool direct = IsPixMap && PixelType == 16;
 
-            if (IsPixMap && PixelSize == 32 && RowBytes >= 8 && PackType != 1)
-            {
-                ReadDirect32(b, height);
-                return;
-            }
-
-            if (unpacked)
+            if (RowBytes < 8 || (direct && PackType == 1))
             {
                 var raw = b.ReadExactly(Data.Length);
                 Buffer.BlockCopy(raw, 0, Data, 0, raw.Length);
+                return;
+            }
+            if (direct)
+            {
+                ReadDirect(b, height);
                 return;
             }
 
@@ -190,17 +191,18 @@ namespace QuickDraw.Pict
             var line = new byte[RowBytes];
             for (int y = 0; y < height; y++)
             {
-                UnpackRow(b, line, sizesAreWords, wordChunks: PixelSize == 16);
+                UnpackRow(b, line, sizesAreWords, wordChunks: false);
                 Buffer.BlockCopy(line, 0, Data, y * RowBytes, RowBytes);
             }
         }
 
-        // 32-bit packed pixel data, dispatched on packType as the Macintosh ROM's direct pixel reader does:
+        // Packed direct pixel data, dispatched on packType as the ROM's GetDirectPMData does (pixelSize is never checked,
+        // so a 16-bit map with packType 0, 2 or 4 decodes as wrongly as on a Macintosh):
         // 0 or 2: rows of 3 bytes per pixel (R, G, B) without row counts, expanded to 0RGB; 3: word-chunk PackBits
         // rows; 4: component-plane PackBits rows, cmpCount planes rowBytes/4 wide landing on pixel bytes
         // 4 - cmpCount .. 3 (alpha stays 0 with three planes); 5 and up: the rows are read and discarded, leaving the
         // pixels zero.
-        private void ReadDirect32(BinaryReader b, int height)
+        private void ReadDirect(BinaryReader b, int height)
         {
             bool sizesAreWords = RowBytes > 250;
             int pixels = RowBytes / 4;
