@@ -6,15 +6,13 @@ namespace QuickDraw.Pict
     // CopyBits (StdBits → StretchBits) onto the canvas: srcRect of a picture's BitMap/PixMap to dstRect, clipped to the
     // canvas and the mask (the picture's clip ∩ its mask region), through a source transfer mode.
     //
-    // Scaling follows QuickDraw's StretchBits: a vertical DDA that merges source rows into each destination row
-    // (error term starting at -srcHeight/2), and a horizontal row stretcher with exact fast paths for x1.5, x2, x3, x4,
-    // x6, x8, x16 and multiples of 8, and for x1/2, x1/4 and x3/4, otherwise a 16-bit fraction stepper. 1-bit sources
-    // OR the merged pixels together (black wins), as the original does.
-    //
-    // Deeper sources (UNVERIFIED — pending Color QuickDraw ROM analysis): they take the first source pixel of each
-    // merged group, and full-color Boolean modes combine colors bitwise the way Color QuickDraw combines indexed pixel
-    // values (white = no ink). Colorizing (fore/back colors other than black/white) is (src AND back) OR (NOT src AND
-    // fore) per channel, the RGB form of Color QuickDraw's index formula.
+    // Scaling follows the ROM's StretchBits: a vertical DDA that merges source rows into each destination row (error
+    // term starting at -(srcH - 1) for exact integer shrinks, else -(srcH / 2)), then a horizontal row scaler. 1-bit
+    // sources use the 1984 row stretchers (exact fast paths for x1.5, x2, x3, x4, x6, x8, x16 and multiples of 8, and
+    // for x1/2, x1/4 and x3/4, else a 16-bit fraction stepper) and OR merged pixels (black wins). Deeper sources step
+    // the fraction for every ratio: stretching replicates pixels; shrinking merges each group, rows first then
+    // columns, into the largest index (2-8 bits) or the truncated per-component average (16 and 32 bits). Merging
+    // and scaling happen at the source depth, before color conversion.
     internal static class Bits
     {
         public static void CopyBits(PictBitmap canvas, PixMap src, PictRect srcRect, PictRect dstRect, int mode,
@@ -29,7 +27,8 @@ namespace QuickDraw.Pict
             int srcTop = srcRect.Top - src.Bounds.Top, srcLeft = srcRect.Left - src.Bounds.Left;
             bool scaled = srcW != dstW || srcH != dstH;
             var rows = scaled ? RowGroups(srcTop, srcH, dstH, src.Height) : null;
-            var cols = scaled ? ColumnGroups(srcW, dstW) : null;
+            var cols = scaled ? (src.PixelSize == 1 ? ColumnGroups(srcW, dstW) : DeepColumnGroups(srcW, dstW)) : null;
+            bool averagedRows = dstH < srcH;
 
             mode &= ~TransferModes.DitherCopy;
             bool bilevel = src.PixelSize == 1 && IsBlackAndWhite(src.Palette);
@@ -58,12 +57,18 @@ namespace QuickDraw.Pict
                             else
                                 write = ApplyColorSource(mode, hilitePending, src.Palette[bit ? 1 : 0], dst, colors, out result);
                         }
-                        else
+                        else if (!scaled)
                         {
-                            int sy = group[0], sx = srcLeft + Math.Min(first, srcW - 1);
+                            int sy = group[0], sx = srcLeft + first;
                             if (sy < 0 || sy >= src.Height || sx < 0 || sx >= src.Width) continue;
                             write = ApplyColorSource(mode, hilitePending, src.GetPixel(sx, sy), dst, colors, out result);
                             if (keepAlpha) alpha = src.GetAlpha(sx, sy);
+                        }
+                        else
+                        {
+                            if (!TryDeep(src, group, srcLeft, first, end, out var color, out bool averaged, out byte a)) continue;
+                            write = ApplyColorSource(mode, hilitePending, color, dst, colors, out result);
+                            if (keepAlpha) alpha = averaged || averagedRows ? (byte)0 : a;
                         }
                         if (write) Painter.WritePixel(canvas, x, y, result, alpha);
                     }
@@ -94,6 +99,60 @@ namespace QuickDraw.Pict
             return any;
         }
 
+        // A scaled deep pixel: the rows then columns of its group merged at the source depth (largest index for 2-8
+        // bits; truncated per-component average of 5-bit or 8-bit components for 16 and 32 bits), then converted.
+        private static bool TryDeep(PixMap src, int[] rows, int srcLeft, int first, int end, out PictColor color,
+            out bool averaged, out byte alpha)
+        {
+            color = default;
+            averaged = false;
+            alpha = 255;
+            int maxIndex = -1, columns = 0;
+            int sumR = 0, sumG = 0, sumB = 0;
+            for (int i = first; i < end; i++)
+            {
+                int x = srcLeft + i;
+                if (x < 0 || x >= src.Width) continue;
+                int n = 0, r = 0, g = 0, b = 0;
+                foreach (int row in rows)
+                {
+                    if (row < 0 || row >= src.Height) continue;
+                    if (src.PixelSize <= 8)
+                    {
+                        maxIndex = Math.Max(maxIndex, src.GetIndex(x, row));
+                        n++;
+                        continue;
+                    }
+                    var (cr, cg, cb) = src.GetComponents(x, row);
+                    r += cr; g += cg; b += cb;
+                    n++;
+                    alpha = src.GetAlpha(x, row);
+                }
+                if (n == 0) continue;
+                if (n > 1) averaged = true;
+                columns++;
+                if (src.PixelSize > 8)
+                {
+                    sumR += r / n; sumG += g / n; sumB += b / n;
+                }
+            }
+            if (columns == 0) return false;
+            if (src.PixelSize <= 8)
+            {
+                color = maxIndex < src.Palette.Length ? src.Palette[maxIndex] : new PictColor(0, 0, 0);
+                return true;
+            }
+            if (columns > 1) averaged = true;
+            int R = columns == 2 ? sumR >> 1 : sumR / columns, G = columns == 2 ? sumG >> 1 : sumG / columns,
+                B = columns == 2 ? sumB >> 1 : sumB / columns;
+            color = src.PixelSize == 16
+                ? new PictColor(Expand5(R), Expand5(G), Expand5(B))
+                : new PictColor((byte)R, (byte)G, (byte)B);
+            return true;
+        }
+
+        private static byte Expand5(int c) => (byte)((c << 3) | (c >> 2));
+
         // A full-color source pixel through the mode (TransferModes.ApplyBoolean / ApplyColor).
         private static bool ApplyColorSource(int mode, bool hilitePending, PictColor s, PictColor d, in PortColors c,
             out PictColor result)
@@ -113,7 +172,8 @@ namespace QuickDraw.Pict
         internal static int[]?[] RowGroups(int srcTop, int srcHeight, int dstHeight, int bitmapHeight)
         {
             var result = new int[]?[dstHeight];
-            int error = -((ushort)srcHeight >> 1);
+            int start = srcHeight > dstHeight && srcHeight % dstHeight == 0 ? srcHeight - 1 : (ushort)srcHeight >> 1;
+            int error = -start;
             int row = srcTop, k = 0;
             var group = new List<int>();
             while (row < bitmapHeight)
@@ -133,6 +193,38 @@ namespace QuickDraw.Pict
                     if (k == dstHeight) return result;
                     error -= srcHeight;
                 } while (error >= 0);
+            }
+            return result;
+        }
+
+        // Deep pixels: stretching replicates src[((f >> 1) + j * f) >> 16] with f = FixRatio(srcW, dstW); shrinking groups
+        // source column i into destination ((f >> 1) + i * f) >> 16 with f = FixRatio(dstW, srcW) (16-bit fractions).
+        internal static (int first, int end)[] DeepColumnGroups(int srcWidth, int dstWidth)
+        {
+            var result = new (int first, int end)[dstWidth];
+            if (dstWidth == srcWidth)
+            {
+                for (int j = 0; j < dstWidth; j++) result[j] = (j, j + 1);
+                return result;
+            }
+            if (dstWidth > srcWidth)
+            {
+                int f = FixedMath.FixRatio((short)srcWidth, (short)dstWidth) & 0xFFFF;
+                for (int j = 0; j < dstWidth; j++)
+                {
+                    int i = (int)(((f >> 1) + (long)j * f) >> 16);
+                    result[j] = (i, i + 1);
+                }
+                return result;
+            }
+            int fraction = FixedMath.FixRatio((short)dstWidth, (short)srcWidth) & 0xFFFF;
+            var seen = new bool[dstWidth];
+            for (int i = 0; i < srcWidth; i++)
+            {
+                int d = (int)(((fraction >> 1) + (long)i * fraction) >> 16);
+                if (d >= dstWidth) break;
+                result[d] = seen[d] ? (result[d].first, i + 1) : (i, i + 1);
+                seen[d] = true;
             }
             return result;
         }

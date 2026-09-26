@@ -55,6 +55,28 @@ namespace QuickDraw.Pict
             }
         }
 
+        // The raw index of a pixel of an indexed map (1-8 bits).
+        public int GetIndex(int x, int y)
+        {
+            int bit = x * PixelSize, value = 0, row = y * RowBytes;
+            for (int i = 0; i < PixelSize; i++, bit++)
+                value = (value << 1) | ((Data[row + (bit >> 3)] >> (7 - (bit & 7))) & 1);
+            return value;
+        }
+
+        // The components of a direct pixel at its own depth: 5-bit fields for 16-bit, 8-bit bytes for 32-bit.
+        public (int r, int g, int b) GetComponents(int x, int y)
+        {
+            int row = y * RowBytes;
+            if (PixelSize == 16)
+            {
+                int p = (Data[row + 2 * x] << 8) | Data[row + 2 * x + 1];
+                return ((p >> 10) & 0x1F, (p >> 5) & 0x1F, p & 0x1F);
+            }
+            int i = row + 4 * x;
+            return (Data[i + 1], Data[i + 2], Data[i + 3]);
+        }
+
         // The alpha byte of a 32-bit pixel (the first of its four; meaningful only when CmpCount is 4).
         public byte GetAlpha(int x, int y) => PixelSize == 32 ? Data[y * RowBytes + 4 * x] : (byte)255;
 

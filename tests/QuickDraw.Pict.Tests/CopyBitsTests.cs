@@ -252,6 +252,45 @@ public class CopyBitsTests
     }
 
     [Fact]
+    public void RowGroups_ExactIntegerShrink_StartsTheErrorAtSrcHMinusOne()
+    {
+        // 6 -> 2: even groups (the 1984 start of -srcH/2 would give {0,1}, {2,3,4}).
+        Assert.Equal(new[] { new[] { 0, 1, 2 }, new[] { 3, 4, 5 } }, QuickDraw.Pict.Bits.RowGroups(0, 6, 2, 6));
+        // 5 -> 2: not an integer factor, so -srcH/2: {0,1}, {2,3}, row 4 never read.
+        Assert.Equal(new[] { new[] { 0, 1 }, new[] { 2, 3 } }, QuickDraw.Pict.Bits.RowGroups(0, 5, 2, 5));
+    }
+
+    [Fact]
+    public void DeepColumnGroups_OneAndAHalf_SteppsTheFractionWithoutTheOneBitFastPath()
+    {
+        Assert.Equal(new[] { 0, 0, 1, 2, 2, 3 }, QuickDraw.Pict.Bits.DeepColumnGroups(4, 6).Select(g => g.first).ToArray());
+        Assert.Equal(new[] { (0, 2), (2, 4) }, QuickDraw.Pict.Bits.DeepColumnGroups(4, 2));
+    }
+
+    [Fact]
+    public void CopyBits_DeepShrink_AveragesDirectPixelsTruncating()
+    {
+        // 32-bit 2x2 shrunk to 1x1: rows averaged per column, then the two columns: (10+21)/2=15, (15+30)/2=22 ... per component.
+        var bmp = Draw(1, 1, b => Direct32(b, 2, 2, (0, 0, 1, 1), 0, 3,
+            (0, 10, 0, 255), (0, 21, 1, 0), (0, 30, 3, 0), (0, 40, 4, 255)));
+        // column 0: (10+30)/2 = 20, (0+3)/2 = 1, (255+0)/2 = 127; column 1: (21+40)/2 = 30, (1+4)/2 = 2, (0+255)/2 = 127
+        Assert.Equal(new PictColor(25, 1, 127), bmp[0, 0]);
+    }
+
+    [Fact]
+    public void CopyBits_DeepShrink_TakesTheLargestIndex()
+    {
+        // 8-bit 2x1 shrunk to 1x1: indices 5 and 200 -> 200 (a darker cube color, not an average).
+        var pict = PictBuilder.V2(0, 0, 1, 1).U16(0x0090).U16(0x8002).Rect(0, 0, 1, 2)
+            .U16(0).U16(0).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0).U16(0).U16(8).U16(1).U16(8).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .U16(0).U16(0).U16(0x8000).U16(255);
+        var palette = StandardColorTables.ForId(8)!;
+        for (int i = 0; i < 256; i++) pict.U16(i).Rgb(palette[i].R * 257, palette[i].G * 257, palette[i].B * 257);
+        pict.Rect(0, 0, 1, 2).Rect(0, 0, 1, 1).U16(0).U8(5).U8(200).U16(0x00FF);
+        Assert.Equal(palette[200], PictReader.Decode(pict.ToArray())[0, 0]);
+    }
+
+    [Fact]
     public void RowGroups_ShrinkMergesRowsAndStretchRepeatsThem()
     {
         Assert.Equal(new[] { new[] { 0, 1 }, new[] { 2, 3 } }, QuickDraw.Pict.Bits.RowGroups(0, 4, 2, 4));
