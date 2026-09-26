@@ -105,7 +105,7 @@ namespace QuickDraw.Pict
             if (pictureRect is { } pr) lastRect = pr;
             var r = MapRect(lastRect);
             if (r.IsEmpty) { Done(); return; }
-            Shape(verb, () => RegionShapes.Rect(r), () => RegionShapes.FrameRect(r, penWidth, penHeight));
+            Shape(verb, () => RegionShapes.Rect(r), () => RegionShapes.FrameRect(r, penWidth, penHeight), true);
         }
 
         public void RoundRect(PictRect? pictureRect, int verb)
@@ -114,7 +114,7 @@ namespace QuickDraw.Pict
             var r = MapRect(lastRect);
             if (r.IsEmpty) { Done(); return; }
             Shape(verb, () => RegionShapes.RoundRect(r, ovalWidth, ovalHeight),
-                () => RegionShapes.FrameRoundRect(r, ovalWidth, ovalHeight, penWidth, penHeight));
+                () => RegionShapes.FrameRoundRect(r, ovalWidth, ovalHeight, penWidth, penHeight), false);
         }
 
         public void Oval(PictRect? pictureRect, int verb)
@@ -122,7 +122,7 @@ namespace QuickDraw.Pict
             if (pictureRect is { } pr) lastRect = pr;
             var r = MapRect(lastRect);
             if (r.IsEmpty) { Done(); return; }
-            Shape(verb, () => RegionShapes.Oval(r), () => RegionShapes.FrameOval(r, penWidth, penHeight));
+            Shape(verb, () => RegionShapes.Oval(r), () => RegionShapes.FrameOval(r, penWidth, penHeight), false);
         }
 
         public void Arc(PictRect? pictureRect, int startAngle, int arcAngle, int verb)
@@ -131,7 +131,7 @@ namespace QuickDraw.Pict
             var r = MapRect(lastRect);
             if (r.IsEmpty) { Done(); return; }
             Shape(verb, () => RegionShapes.Arc(r, startAngle, arcAngle),
-                () => RegionShapes.FrameArc(r, startAngle, arcAngle, penWidth, penHeight));
+                () => RegionShapes.FrameArc(r, startAngle, arcAngle, penWidth, penHeight), false);
         }
 
         // Polygons (picture-space points). Framing draws each edge as a line and does not close the polygon.
@@ -148,28 +148,29 @@ namespace QuickDraw.Pict
                 Done();
                 return;
             }
-            Shape(verb, () => RegionShapes.Polygon(pts), () => Region.Empty);
+            Shape(verb, () => RegionShapes.Polygon(pts), () => Region.Empty, true);
         }
 
         public void Rgn(Region? pictureRegion, int verb)
         {
             if (pictureRegion != null) lastRegion = pictureRegion;
             var rgn = MapRegion(lastRegion);
-            Shape(verb, () => rgn, () => RegionShapes.FrameRegion(rgn, penWidth, penHeight));
+            Shape(verb, () => rgn, () => RegionShapes.FrameRegion(rgn, penWidth, penHeight), true);
         }
 
         // StdRgn: frame paints the frame with the pen, paint uses the pen pattern and mode, erase the background
         // pattern (patCopy), invert XORs with black (hilite when pending), fill the fill pattern (patCopy).
-        private void Shape(int verb, Func<Region> interior, Func<Region> frame)
+        // viaStretchBits: rects, regions and polygons (not ovals, round rects and arcs, which DrawArc draws itself).
+        private void Shape(int verb, Func<Region> interior, Func<Region> frame, bool viaStretchBits)
         {
             var colors = Colors;
             switch (verb)
             {
-                case 0: Painter.FillRegion(canvas, frame(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors); break;
-                case 1: Painter.FillRegion(canvas, interior(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors); break;
-                case 2: Painter.FillRegion(canvas, interior(), clip, BkPat, PatternAlign, TransferModes.PatCopy, false, colors); break;
-                case 3: Painter.FillRegion(canvas, interior(), clip, Pattern.Black, PatternAlign, TransferModes.PatXor, hilitePending, colors); break;
-                case 4: Painter.FillRegion(canvas, interior(), clip, FillPat, PatternAlign, TransferModes.PatCopy, false, colors); break;
+                case 0: Painter.FillRegion(canvas, frame(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors, viaStretchBits); break;
+                case 1: Painter.FillRegion(canvas, interior(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors, viaStretchBits); break;
+                case 2: Painter.FillRegion(canvas, interior(), clip, BkPat, PatternAlign, TransferModes.PatCopy, false, colors, viaStretchBits); break;
+                case 3: Painter.FillRegion(canvas, interior(), clip, Pattern.Black, PatternAlign, TransferModes.PatXor, hilitePending, colors, viaStretchBits); break;
+                case 4: Painter.FillRegion(canvas, interior(), clip, FillPat, PatternAlign, TransferModes.PatCopy, false, colors, viaStretchBits); break;
             }
             Done();
         }
@@ -203,7 +204,7 @@ namespace QuickDraw.Pict
         {
             var region = RegionShapes.Line(x1, y1, x2, y2, penWidth, penHeight);
             int mode = PenMode < TransferModes.Blend ? (PenMode % 0x40) | 8 : PenMode;
-            Painter.FillRegion(canvas, region, clip, PnPat, PatternAlign, mode, hilitePending, Colors);
+            Painter.FillRegion(canvas, region, clip, PnPat, PatternAlign, mode, hilitePending, Colors, x1 == x2 || y1 == y2);
         }
 
         // ---- bitmaps ----

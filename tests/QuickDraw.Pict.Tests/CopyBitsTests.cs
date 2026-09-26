@@ -205,6 +205,19 @@ public class CopyBitsTests
         Assert.Equal(new[] { "gr" }, Picture(bmp));
     }
 
+    [Theory]
+    [InlineData(1, 0x80, 0x30, 0x90)]    // srcOr on a direct destination: ~s & F | s & d = s & d with black fore
+    [InlineData(2, 0x8F, 0x7F, 0x9F)]    // srcXor: d ^ ~s
+    [InlineData(3, 0xBF, 0xFF, 0xBF)]    // srcBic: ~s & B | s & d = ~s | (s & d) with white back
+    [InlineData(6, 0x70, 0x80, 0x60)]    // notSrcXor: d ^ s
+    public void CopyBits_DeepSource_BooleanModesAreBitwiseOnPixelValues(int mode, int r, int g, int b)
+    {
+        // dst (0xB0, 0xB0, 0xB0), src (0xC0, 0x30, 0xD0), default black fore / white back.
+        var bmp = Draw(1, 1, p => Direct32(p.U16(0x001A).Rgb(0xB0B0, 0xB0B0, 0xB0B0).U16(0x0031).Rect(0, 0, 1, 1).U16(0x001A).Rgb(0, 0, 0),
+            1, 1, (0, 0, 1, 1), mode, 3, (0, 0xC0, 0x30, 0xD0)));
+        Assert.Equal(new PictColor((byte)r, (byte)g, (byte)b), bmp[0, 0]);
+    }
+
     [Fact]
     public void CopyBits_Transparent_SkipsBackgroundColoredPixels()
     {

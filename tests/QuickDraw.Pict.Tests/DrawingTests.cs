@@ -149,26 +149,50 @@ public class DrawingTests
         Assert.Equal(Black, bmp[2, 0]);
     }
 
-    [Fact]
-    public void PixelPattern_IsCopiedRegardlessOfPenMode()
+    [Theory]
+    [InlineData(8, "bb")]      // patCopy: the pattern's pixels
+    [InlineData(9, "ww")]      // patOr: dst | P (white | blue = white)
+    [InlineData(11, "")]       // patBic: dst & ~P (white & ~blue = yellow)
+    public void PixelPattern_BooleanModesActOnPixelValues(int mode, string expected)
     {
         var bmp = Draw(2, 1, b =>
         {
             b.U16(0x0013).U16(2).Zeros(8).Rgb(0, 0, 0xFFFF);   // PnPixPat ditherPat: solid blue
-            b.U16(0x0008).U16(9);                              // patOr would ignore white bits of the mono fallback
+            b.U16(0x0008).U16(mode);
             b.U16(0x0031).Rect(0, 0, 1, 2);
         });
-        Assert.Equal(new[] { "bb" }, Picture(bmp));
+        if (mode == 11) Assert.Equal(new PictColor(255, 255, 0), bmp[0, 0]);
+        else Assert.Equal(new[] { expected }, Picture(bmp));
     }
 
     [Fact]
     public void ArithmeticBlend_WeightsByOpColor()
     {
-        // Red painted, then blue blended at OpColor 0x8000: (src * w + dst * (65535 - w)) / 65535 per component.
+        // Red painted, then blue blended at OpColor 0x8000 on every component: the exact average (s + d) >> 1.
         var bmp = Draw(1, 1, b => b.U16(0x001A).Rgb(0xFFFF, 0, 0).U16(0x0031).Rect(0, 0, 1, 1)
             .U16(0x001F).Rgb(0x8000, 0x8000, 0x8000).U16(0x001A).Rgb(0, 0, 0xFFFF)
             .U16(0x0008).U16(32).U16(0x0031).Rect(0, 0, 1, 1));
-        Assert.Equal(new PictColor(0x7F, 0, 0x80), bmp[0, 0]);
+        Assert.Equal(new PictColor(0x7F, 0, 0x7F), bmp[0, 0]);
+    }
+
+    [Fact]
+    public void ArithmeticBlend_TruncatesPerComponent()
+    {
+        // Weights R $FFFF, G $4000, B $8000 (not all equal): (s * w + d * (65536 - w)) >> 16 with 8-bit s, d.
+        var bmp = Draw(1, 1, b => b.U16(0x001A).Rgb(0, 0, 0).U16(0x0031).Rect(0, 0, 1, 1)
+            .U16(0x001F).Rgb(0xFFFF, 0x4000, 0x8000).U16(0x001A).Rgb(0xFFFF, 0xFFFF, 0xFFFF)
+            .U16(0x0008).U16(32).U16(0x0031).Rect(0, 0, 1, 1));
+        Assert.Equal(new PictColor(254, 63, 127), bmp[0, 0]);
+    }
+
+    [Fact]
+    public void ArithmeticSubPin_SubtractsTheSourceFromTheDestination()
+    {
+        // dst 0xC0, src 0x40: d - s = 0x80, pinned below at the OpColor's high byte (0x90 for red).
+        var bmp = Draw(1, 1, b => b.U16(0x001A).Rgb(0xC0C0, 0xC0C0, 0xC0C0).U16(0x0031).Rect(0, 0, 1, 1)
+            .U16(0x001F).Rgb(0x9000, 0x1000, 0x1000).U16(0x001A).Rgb(0x4040, 0x4040, 0xFFFF)
+            .U16(0x0008).U16(35).U16(0x0031).Rect(0, 0, 1, 1));
+        Assert.Equal(new PictColor(0x90, 0x80, 0x10), bmp[0, 0]);   // blue: 0xC0 - 0xFF borrows -> pin
     }
 
     [Fact]

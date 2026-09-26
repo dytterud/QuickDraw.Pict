@@ -64,7 +64,10 @@ namespace QuickDraw.Pict
         }
 
         // A full-color source pixel under an arithmetic, transparent or hilite mode (the colorized pattern pixel
-        // for 1-bit data). Components are Color QuickDraw's 16-bit values (8-bit x 257), truncated back to 8 bits.
+        // for 1-bit data), as the ROM's 32-bit loops compute them per 8-bit component: blend
+        // (s * w + d * (65536 - w)) >> 16 truncating, with the exact average (s + d) >> 1 when all three weights are
+        // $7FFF or $8000; addPin / subPin (d - s) pinned to the OpColor's high byte on overflow or past it;
+        // addOver / subOver modulo 256; addMax / adMin. A zero OpColor component counts as 1.
         public static bool ApplyColor(int mode, PictColor src, PictColor dst, in PortColors c, out PictColor result)
         {
             switch (mode)
@@ -79,29 +82,54 @@ namespace QuickDraw.Pict
                     if (SameRgb(dst, c.Hilite)) { result = c.Back; return true; }
                     return false;
             }
+            int wr = Math.Max(1, (int)c.Op.r), wg = Math.Max(1, (int)c.Op.g), wb = Math.Max(1, (int)c.Op.b);
+            bool average = mode == Blend && wr == wg && wg == wb && ((wr + 1) & ~1) == 0x8000;
             result = new PictColor(
-                Arithmetic(mode, src.R, dst.R, c.Op.r),
-                Arithmetic(mode, src.G, dst.G, c.Op.g),
-                Arithmetic(mode, src.B, dst.B, c.Op.b));
+                Arithmetic(mode, src.R, dst.R, wr, average),
+                Arithmetic(mode, src.G, dst.G, wg, average),
+                Arithmetic(mode, src.B, dst.B, wb, average));
             return true;
         }
 
-        private static byte Arithmetic(int mode, byte src8, byte dst8, ushort op)
+        private static byte Arithmetic(int mode, int s, int d, int w, bool average)
         {
-            int s = src8 * 257, d = dst8 * 257, r;
+            int pin = w >> 8;
             switch (mode)
             {
-                case Blend: r = (int)(((long)s * op + (long)d * (65535 - op)) / 65535); break;
-                case AddPin: r = Math.Min(s + d, op); break;
-                case AddOver: r = (s + d) & 0xFFFF; break;
-                case SubPin: r = Math.Max(s - d, op); break;
-                case SubOver: r = (s - d) & 0xFFFF; break;
-                case AddMax: r = Math.Max(s, d); break;
-                case AdMin: r = Math.Min(s, d); break;
-                default: r = s; break;
+                case Blend: return (byte)(average ? (s + d) >> 1 : (int)(((long)s * w + (long)d * (65536 - w)) >> 16));
+                case AddPin: { int r = s + d; return (byte)(r > 255 || r > pin ? pin : r); }
+                case AddOver: return (byte)(s + d);
+                case SubPin: { int r = d - s; return (byte)(r < 0 || r < pin ? pin : r); }
+                case SubOver: return (byte)(d - s);
+                case AddMax: return (byte)Math.Max(s, d);
+                case AdMin: return (byte)Math.Min(s, d);
+                default: return (byte)s;
             }
-            return (byte)(r >> 8);
         }
+
+        // A full-color source pixel (or pixel pattern) under a Boolean mode on a 32-bit destination, bitwise on the
+        // RGB values as the ROM's loops compute them (fore/back colors F and B as pixel values; the direct
+        // destination works on inverted values, so with the default black/white colors srcOr is an AND):
+        //   srcCopy (s & B) | (~s & F)     srcOr (~s & F) | (s & d)     srcXor d ^ ~s     srcBic (~s & B) | (s & d)
+        //   notSrcCopy (~s & B) | (s & F)  notSrcOr (s & F) | (~s & d)  notSrcXor d ^ s   notSrcBic (s & B) | (~s & d)
+        public static PictColor ApplyBoolean(int mode, PictColor src, PictColor dst, in PortColors c)
+        {
+            int s = Rgb(src), d = Rgb(dst), f = Rgb(c.Fore), b = Rgb(c.Back), r;
+            switch (mode & 7)
+            {
+                case 0: r = (s & b) | (~s & f); break;
+                case 1: r = (~s & f) | (s & d); break;
+                case 2: r = d ^ ~s; break;
+                case 3: r = (~s & b) | (s & d); break;
+                case 4: r = (~s & b) | (s & f); break;
+                case 5: r = (s & f) | (~s & d); break;
+                case 6: r = d ^ s; break;
+                default: r = (s & b) | (~s & d); break;
+            }
+            return new PictColor((byte)(r >> 16), (byte)(r >> 8), (byte)r);
+        }
+
+        private static int Rgb(PictColor c) => (c.R << 16) | (c.G << 8) | c.B;
 
         public static PictColor Invert(PictColor c) => new PictColor((byte)(255 - c.R), (byte)(255 - c.G), (byte)(255 - c.B));
 

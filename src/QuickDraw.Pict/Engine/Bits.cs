@@ -94,28 +94,16 @@ namespace QuickDraw.Pict
             return any;
         }
 
-        // A full-color source pixel (UNVERIFIED semantics for Boolean modes, see the class comment).
+        // A full-color source pixel through the mode (TransferModes.ApplyBoolean / ApplyColor).
         private static bool ApplyColorSource(int mode, bool hilitePending, PictColor s, PictColor d, in PortColors c,
             out PictColor result)
         {
             int m = TransferModes.Normalize(mode, hilitePending);
             if (m >= TransferModes.Blend)
                 return TransferModes.ApplyColor(m, s, d, c, out result);
-            var ink = Colorize((m & 4) != 0 ? TransferModes.Invert(s) : s, c);
-            switch (m & 3)
-            {
-                case 0: result = ink; break;
-                case 1: result = new PictColor((byte)(d.R & ink.R), (byte)(d.G & ink.G), (byte)(d.B & ink.B)); break;
-                case 2: result = new PictColor((byte)~(d.R ^ ink.R), (byte)~(d.G ^ ink.G), (byte)~(d.B ^ ink.B)); break;
-                default: result = new PictColor((byte)(d.R | ~ink.R), (byte)(d.G | ~ink.G), (byte)(d.B | ~ink.B)); break;
-            }
+            result = TransferModes.ApplyBoolean(m, s, d, c);
             return true;
         }
-
-        private static PictColor Colorize(PictColor s, in PortColors c) => new PictColor(
-            (byte)((s.R & c.Back.R) | (~s.R & c.Fore.R)),
-            (byte)((s.G & c.Back.G) | (~s.G & c.Fore.G)),
-            (byte)((s.B & c.Back.B) | (~s.B & c.Fore.B)));
 
         // ---- StretchBits geometry ----
 
