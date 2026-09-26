@@ -3,13 +3,15 @@ using System;
 namespace QuickDraw.Pict
 {
     // Transfers a pattern, or a 1-bit mask, through a region onto the canvas. Patterns are aligned to the canvas
-    // origin, as QuickDraw aligns them to the destination bitmap. A pixel the picture never drew (alpha 0) reads as
+    // origin shifted by the picture's pattern alignment (align: the Origin opcodes' accumulated dh, dv), so pixel
+    // (x, y) takes pattern cell ((x + align.h) & 7, (y + align.v) & 7), as DrawPicture aligns them. A pixel the picture never drew (alpha 0) reads as
     // white, the erased background of a fresh port; pixels a mode leaves alone keep their alpha.
     internal static class Painter
     {
         private static readonly PictColor White = new PictColor(255, 255, 255);
 
-        public static void FillRegion(PictBitmap canvas, Region region, Region? clip, Pattern pattern, int mode, bool hilitePending, in PortColors colors)
+        public static void FillRegion(PictBitmap canvas, Region region, Region? clip, Pattern pattern, (int h, int v) align,
+            int mode, bool hilitePending, in PortColors colors)
         {
             var area = Visible(canvas, region, clip);
             if (area.IsEmpty) return;
@@ -26,7 +28,7 @@ namespace QuickDraw.Pict
                         if (colorPattern)
                         {
                             // Color QuickDraw copies pixel patterns directly, ignoring Boolean pattern modes.
-                            var src = pattern.Rgb ?? PatternPixel(pattern.Pixels!, x, y);
+                            var src = pattern.Rgb ?? PatternPixel(pattern.Pixels!, x + align.h, y + align.v);
                             if (TransferModes.IsArithmetic(m) || m == TransferModes.Hilite)
                                 write = TransferModes.ApplyColor(m, src, dst, colors, out result);
                             else
@@ -37,7 +39,7 @@ namespace QuickDraw.Pict
                         }
                         else
                         {
-                            bool bit = ((pattern.Mono[y & 7] >> (7 - (x & 7))) & 1) != 0;
+                            bool bit = ((pattern.Mono[(y + align.v) & 7] >> (7 - ((x + align.h) & 7))) & 1) != 0;
                             write = TransferModes.ApplyBit(m, bit, dst, colors, out result);
                         }
                         if (write) Write(canvas, x, y, result);

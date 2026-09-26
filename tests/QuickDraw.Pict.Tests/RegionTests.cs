@@ -3,8 +3,8 @@ using Xunit;
 namespace QuickDraw.Pict.Tests;
 
 // QuickDraw regions: the inversion-point format, set operations, InsetRgn, and the shape rasterizers. Golden masks
-// for ovals, round rects and polygons were hand-traced through Executor's ROMlib_circrgn / roundRectRgn / polyrgn
-// (qStdOval.cpp, qStdRRect.cpp, qStdPoly.cpp, qStdLine.cpp); '#' = inside.
+// for shapes are the Macintosh's pixels (confirmed against an independent reference of QuickDraw's scan
+// converters); '#' = inside.
 public class RegionTests
 {
     private static string[] Mask(Region r, int width, int height) =>
@@ -94,7 +94,7 @@ public class RegionTests
     }
 
     [Fact]
-    public void Oval_SmallerThan4x4_IsARect()
+    public void Oval_3x3_FillsItsRect()
     {
         Assert.Equal(new[] { "###", "###", "###" }, Mask(RegionShapes.Oval(new PictRect(0, 0, 3, 3)), 3, 3));
     }
@@ -156,8 +156,9 @@ public class RegionTests
     [Fact]
     public void Polygon_Diagonal_FollowsTheEdgeStaircase()
     {
-        // (h, v) points: (0,0) -> (4,4) -> (0,4), closed back to (0,0).
-        Assert.Equal(new[] { "....", "#...", "##..", "###." },
+        // (h, v) points: (0,0) -> (4,4) -> (0,4), closed back to (0,0). The diagonal's h rounds to the pixel centre
+        // of each scan line, so its own pixels are inside.
+        Assert.Equal(new[] { "#...", "##..", "###.", "####" },
             Mask(RegionShapes.Polygon(new[] { (0, 0), (4, 4), (0, 4) }), 4, 4));
     }
 

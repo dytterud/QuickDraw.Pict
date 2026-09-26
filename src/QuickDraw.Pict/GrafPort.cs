@@ -49,6 +49,9 @@ namespace QuickDraw.Pict
             HiliteColor = options.HiliteColor;
         }
 
+        // DrawPicture starts the pattern alignment at (0, 0) and the Origin opcode adds its dh, dv to it.
+        private (int h, int v) PatternAlign => (originH, originV);
+
         private PortColors Colors => new PortColors(ForeColor, BackColor, OpColor, HiliteColor);
 
         // ---- coordinate mapping ----
@@ -145,11 +148,11 @@ namespace QuickDraw.Pict
             var colors = Colors;
             switch (verb)
             {
-                case 0: Painter.FillRegion(canvas, frame(), clip, PnPat, PenMode, hilitePending, colors); break;
-                case 1: Painter.FillRegion(canvas, interior(), clip, PnPat, PenMode, hilitePending, colors); break;
-                case 2: Painter.FillRegion(canvas, interior(), clip, BkPat, TransferModes.PatCopy, false, colors); break;
-                case 3: Painter.FillRegion(canvas, interior(), clip, Pattern.Black, TransferModes.PatXor, hilitePending, colors); break;
-                case 4: Painter.FillRegion(canvas, interior(), clip, FillPat, TransferModes.PatCopy, false, colors); break;
+                case 0: Painter.FillRegion(canvas, frame(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors); break;
+                case 1: Painter.FillRegion(canvas, interior(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors); break;
+                case 2: Painter.FillRegion(canvas, interior(), clip, BkPat, PatternAlign, TransferModes.PatCopy, false, colors); break;
+                case 3: Painter.FillRegion(canvas, interior(), clip, Pattern.Black, PatternAlign, TransferModes.PatXor, hilitePending, colors); break;
+                case 4: Painter.FillRegion(canvas, interior(), clip, FillPat, PatternAlign, TransferModes.PatCopy, false, colors); break;
             }
             Done();
         }
@@ -183,7 +186,7 @@ namespace QuickDraw.Pict
         {
             var region = RegionShapes.Line(x1, y1, x2, y2, PenH, PenV);
             int mode = PenMode < TransferModes.Blend ? (PenMode % 0x40) | 8 : PenMode;
-            Painter.FillRegion(canvas, region, clip, PnPat, mode, hilitePending, Colors);
+            Painter.FillRegion(canvas, region, clip, PnPat, PatternAlign, mode, hilitePending, Colors);
         }
 
         // ---- text ----

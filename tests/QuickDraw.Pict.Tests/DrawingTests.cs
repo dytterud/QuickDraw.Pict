@@ -127,6 +127,16 @@ public class DrawingTests
     }
 
     [Fact]
+    public void OriginOpcode_ShiftsThePatternAlignment()
+    {
+        // DrawPicture adds Origin's dh to patAlign, so the pattern stays fixed to the shapes' own coordinates:
+        // fill pattern column 1 (0x40) lands on canvas x = 0 after Origin(dh = 1).
+        var bmp = Draw(4, 1, b => b.U16(0x000A).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40)
+            .U16(0x000C).Point(0, 1).U16(0x0034).Rect(0, 1, 1, 5));
+        Assert.Equal(new[] { "#www" }, Picture(bmp));
+    }
+
+    [Fact]
     public void HiliteMode_SwapsBackgroundAndHiliteColorForTheNextInvert()
     {
         var hilite = new PictColor(0x99, 0xCC, 0xCC);

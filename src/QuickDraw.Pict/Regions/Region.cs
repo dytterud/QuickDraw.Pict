@@ -9,8 +9,8 @@ namespace QuickDraw.Pict
     // spans are merged, so equal regions have equal representations.
     //
     // QuickDraw stores regions as inversion points: a pixel is inside when the number of points (x', y') with
-    // x' <= x and y' <= y is odd. That representation is linear under XOR, which is how QuickDraw records lines into
-    // an open region (see RegionRecorder); set operations here work on the equivalent band form.
+    // x' <= x and y' <= y is odd. That representation is linear under XOR, which is how QuickDraw records polygon
+    // edges into an open region (see RegionShapes.Polygon); set operations here work on the equivalent band form.
     internal sealed class Region
     {
         internal readonly struct Band
@@ -101,6 +101,31 @@ namespace QuickDraw.Pict
                 foreach (var x in toggles)
                     if (!current.Remove(x)) current.Add(x);
                 top = y;
+            }
+            return new Region(result.ToArray());
+        }
+
+        // Builds a region from one-pixel-high scan lines: rows[y] holds [x0, x1) runs in any order, possibly overlapping.
+        public static Region FromScanlines(SortedDictionary<int, List<int>> rows)
+        {
+            var result = new List<Band>();
+            var pairs = new List<(int x0, int x1)>();
+            foreach (var (y, runs) in rows)
+            {
+                pairs.Clear();
+                for (int i = 0; i + 1 < runs.Count; i += 2) pairs.Add((runs[i], runs[i + 1]));
+                pairs.Sort();
+                var spans = new List<int>(pairs.Count * 2);
+                foreach (var (x0, x1) in pairs)
+                {
+                    if (spans.Count > 0 && x0 <= spans[^1]) spans[^1] = Math.Max(spans[^1], x1);
+                    else
+                    {
+                        spans.Add(x0);
+                        spans.Add(x1);
+                    }
+                }
+                Append(result, y, y + 1, spans.ToArray());
             }
             return new Region(result.ToArray());
         }
