@@ -48,8 +48,13 @@ namespace QuickDraw.Pict
             return result == 0 ? 1 : result;
         }
 
+        // The wide-open region (-32767, -32767, 32767, 32767), which the ROM's MapRgn leaves unmapped.
+        private static readonly PictRect WideOpen = new PictRect(-32767, -32767, 32767, 32767);
+
         public static Region MapRegion(Region region, PictRect from, PictRect to)
         {
+            if (region.Bounds == WideOpen && region.Bands.Count == 1 && region.Bands[0].Spans.Length == 2)
+                return region;
             if (from.Width == to.Width && from.Height == to.Height)
                 return region.Offset(to.Left - from.Left, to.Top - from.Top);
             var rows = new Dictionary<int, List<int>>();

@@ -116,6 +116,23 @@ public class CopyBitsTests
     }
 
     [Fact]
+    public void MapRegion_LeavesTheWideOpenRegionUnmapped()
+    {
+        // The ROM's MapRgn skips it; scaling ±32767 would overflow QuickDraw's 16-bit coordinates.
+        var wide = Region.FromRect(new PictRect(-32767, -32767, 32767, 32767));
+        Assert.Same(wide, PictureMapping.MapRegion(wide, new PictRect(0, 0, 20, 20), new PictRect(0, 0, 10, 10)));
+    }
+
+    [Fact]
+    public void Resolution_PictureFrame_WideOpenClipStillCoversTheCanvas()
+    {
+        var pict = HighRes().U16(0x0001).U16(10).Rect(-32767, -32767, 32767, 32767)
+            .U16(0x0031).Rect(0, 0, 20, 20).U16(0x00FF).ToArray();
+        var frame = PictReader.Decode(pict, new PictDecodeOptions { Resolution = PictResolution.PictureFrame });
+        Assert.All(Picture(frame), row => Assert.Equal("##########", row));
+    }
+
+    [Fact]
     public void OriginOpcode_RemapsTheClip()
     {
         // Clip h 1..3, then Origin dh 1: the clip lands on canvas x 0..2.
