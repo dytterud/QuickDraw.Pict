@@ -153,6 +153,34 @@ namespace QuickDraw.Pict
             return data.ToArray();
         }
 
+        // The region's inversion points (x, y): where a pixel's inside-ness differs from the XOR of its left, upper
+        // and upper-left neighbours.
+        public IEnumerable<(int x, int y)> InversionPoints()
+        {
+            int[] previous = Array.Empty<int>();
+            int previousBottom = int.MinValue;
+            foreach (var band in bands)
+            {
+                if (band.Top != previousBottom && previous.Length > 0)
+                {
+                    foreach (var x in Toggles(previous, Array.Empty<int>())) yield return (x, previousBottom);
+                    previous = Array.Empty<int>();
+                }
+                foreach (var x in Toggles(previous, band.Spans)) yield return (x, band.Top);
+                previous = band.Spans;
+                previousBottom = band.Bottom;
+            }
+            foreach (var x in Toggles(previous, Array.Empty<int>())) yield return (x, previousBottom);
+        }
+
+        private static SortedSet<int> Toggles(int[] before, int[] after)
+        {
+            var toggles = new SortedSet<int>(before);
+            foreach (var x in after)
+                if (!toggles.Remove(x)) toggles.Add(x);
+            return toggles;
+        }
+
         private static void EmitRow(List<short> data, int y, int[] before, int[] after)
         {
             var toggles = new SortedSet<int>(before);

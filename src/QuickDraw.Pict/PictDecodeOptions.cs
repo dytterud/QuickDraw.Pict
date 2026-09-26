@@ -17,6 +17,31 @@ namespace QuickDraw.Pict
         /// (0x001D). Defaults to Color QuickDraw's standard light cyan (0x9999, 0xCCCC, 0xCCCC).
         /// </summary>
         public PictColor HiliteColor { get; init; } = new PictColor(0x99, 0xCC, 0xCC);
+
+        /// <summary>The size to draw the picture at. Defaults to <see cref="PictResolution.Native"/>.</summary>
+        public PictResolution Resolution { get; init; } = PictResolution.Native;
+
+        /// <summary>
+        /// Keeps the alpha channel of 32-bit pixel maps that carry one (four components) when they are copied with
+        /// srcCopy. QuickDraw itself ignores it, and many pictures leave it zero, so it is off by default.
+        /// </summary>
+        public bool PreserveAlpha { get; init; }
+    }
+
+    /// <summary>The size a picture is drawn at.</summary>
+    public enum PictResolution
+    {
+        /// <summary>
+        /// At the picture's own resolution: the canvas covers <see cref="PictInfo.Bounds"/> (for an extended version 2
+        /// picture, its source rectangle at <see cref="PictInfo.HorizontalResolution"/>), one pixel per unit.
+        /// </summary>
+        Native,
+
+        /// <summary>
+        /// At 72 dpi: the canvas covers <see cref="PictInfo.PictureFrame"/>, scaling everything the way
+        /// <c>DrawPicture(picture, picFrame)</c> does on a Macintosh.
+        /// </summary>
+        PictureFrame,
     }
 
     /// <summary>

@@ -22,7 +22,7 @@ namespace QuickDraw.Pict
                 for (int y = r.Top; y < r.Bottom; y++)
                     for (int x = r.Left; x < r.Right; x++)
                     {
-                        var dst = Read(canvas, x, y);
+                        var dst = ReadPixel(canvas, x, y);
                         bool write;
                         PictColor result;
                         if (colorPattern)
@@ -42,7 +42,7 @@ namespace QuickDraw.Pict
                             bool bit = ((pattern.Mono[(y + align.v) & 7] >> (7 - ((x + align.h) & 7))) & 1) != 0;
                             write = TransferModes.ApplyBit(m, bit, dst, colors, out result);
                         }
-                        if (write) Write(canvas, x, y, result);
+                        if (write) WritePixel(canvas, x, y, result);
                     }
         }
 
@@ -58,8 +58,8 @@ namespace QuickDraw.Pict
                     for (int x = r.Left; x < r.Right; x++)
                     {
                         bool bit = bits[(y - top) * width + (x - left)] != 0;
-                        if (TransferModes.ApplyBit(m, bit, Read(canvas, x, y), colors, out var result))
-                            Write(canvas, x, y, result);
+                        if (TransferModes.ApplyBit(m, bit, ReadPixel(canvas, x, y), colors, out var result))
+                            WritePixel(canvas, x, y, result);
                     }
         }
 
@@ -75,18 +75,18 @@ namespace QuickDraw.Pict
             return pm.GetPixel(((x % w) + w) % w, ((y % h) + h) % h);
         }
 
-        private static PictColor Read(PictBitmap canvas, int x, int y)
+        public static PictColor ReadPixel(PictBitmap canvas, int x, int y)
         {
             int i = (y * canvas.Width + x) * 4;
             var p = canvas.Pixels;
             return p[i + 3] == 0 ? White : new PictColor(p[i], p[i + 1], p[i + 2], p[i + 3]);
         }
 
-        private static void Write(PictBitmap canvas, int x, int y, PictColor c)
+        public static void WritePixel(PictBitmap canvas, int x, int y, PictColor c, byte alpha = 255)
         {
             int i = (y * canvas.Width + x) * 4;
             var p = canvas.Pixels;
-            p[i] = c.R; p[i + 1] = c.G; p[i + 2] = c.B; p[i + 3] = 255;
+            p[i] = c.R; p[i + 1] = c.G; p[i + 2] = c.B; p[i + 3] = alpha;
         }
     }
 }

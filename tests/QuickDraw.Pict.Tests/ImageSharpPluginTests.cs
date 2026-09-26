@@ -115,6 +115,23 @@ public class ImageSharpPluginTests
     }
 
     [Fact]
+    public void Decoder_PictureFrameResolution_DecodesAtTheFrameSizeAnd72Dpi()
+    {
+        // Extended v2: frame 10x10 at 72 dpi, drawn in a 20x20 source rect at 144 dpi.
+        var pict = new PictBuilder().U16(0).Rect(0, 0, 10, 10).U16(0x0011).U16(0x02FF)
+            .U16(0x0C00).U16(0xFFFE).U16(0).U16(0x0090).U16(0).U16(0x0090).U16(0).Rect(0, 0, 20, 20).U16(0).U16(0)
+            .U16(0x0031).Rect(0, 0, 20, 20).U16(0x00FF).ToArray();
+        var decoder = PictDecoder.Instance;
+
+        using var native = decoder.Decode<Rgba32>(new PictDecoderOptions { GeneralOptions = Options }, new MemoryStream(pict));
+        using var frame = decoder.Decode<Rgba32>(
+            new PictDecoderOptions { GeneralOptions = Options, Resolution = PictResolution.PictureFrame }, new MemoryStream(pict));
+
+        Assert.Equal((new Size(20, 20), 144.0), (native.Size, native.Metadata.HorizontalResolution));
+        Assert.Equal((new Size(10, 10), 72.0), (frame.Size, frame.Metadata.HorizontalResolution));
+    }
+
+    [Fact]
     public void TruncatedPict_ThrowsInvalidImageContent()
     {
         using var src = TestCard(40, 20);

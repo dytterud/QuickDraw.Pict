@@ -1,0 +1,230 @@
+using Xunit;
+
+namespace QuickDraw.Pict.Tests;
+
+// DrawPicture's coordinate mapping (MapPt / ScalePt / MapRgn), picture scaling (PictResolution), and CopyBits:
+// StretchBits scaling, mask regions, source transfer modes, colorizing and alpha.
+public class CopyBitsTests
+{
+    private static readonly PictColor Black = new(0, 0, 0);
+    private static readonly PictColor White = new(255, 255, 255);
+    private static readonly PictColor Red = new(255, 0, 0);
+    private static readonly PictColor Green = new(0, 255, 0);
+    private static readonly PictColor Blue = new(0, 0, 255);
+
+    private static PictBitmap Draw(int width, int height, Action<PictBuilder> ops, PictDecodeOptions? options = null)
+    {
+        var b = PictBuilder.V2(0, 0, height, width);
+        ops(b);
+        b.Align().U16(0x00FF);
+        return PictReader.Decode(b.ToArray(), options);
+    }
+
+    // '#' black, 'w' white, 'r' red, 'g' green, 'b' blue, '.' untouched, '?' other.
+    private static string[] Picture(PictBitmap bmp) =>
+        Enumerable.Range(0, bmp.Height).Select(y => new string(Enumerable.Range(0, bmp.Width).Select(x =>
+        {
+            var c = bmp[x, y];
+            if (c.A == 0) return '.';
+            if (c == Black) return '#';
+            if (c == White) return 'w';
+            if (c == Red) return 'r';
+            if (c == Green) return 'g';
+            if (c == Blue) return 'b';
+            return '?';
+        }).ToArray())).ToArray();
+
+    // BitsRect (0x90) of a 1-bit bitmap: rowBytes, bounds, srcRect, dstRect, mode, unpacked rows.
+    private static PictBuilder Bits(PictBuilder b, int rowBytes, (int t, int l, int b, int r) bounds,
+        (int t, int l, int b, int r) src, (int t, int l, int b, int r) dst, int mode, params byte[] rows)
+    {
+        b.Align().U16(0x0090).U16(rowBytes).Rect(bounds.t, bounds.l, bounds.b, bounds.r)
+            .Rect(src.t, src.l, src.b, src.r).Rect(dst.t, dst.l, dst.b, dst.r).U16(mode);
+        foreach (var x in rows) b.U8(x);
+        return b;
+    }
+
+    // DirectBitsRect (0x9A) of a w x h 32-bit pixmap, unpacked (packType 1), pixels as (alpha, r, g, b).
+    private static PictBuilder Direct32(PictBuilder b, int w, int h, (int t, int l, int b, int r) dst, int mode,
+        int cmpCount, params (byte a, byte r, byte g, byte b)[] pixels)
+    {
+        b.Align().U16(0x009A).U16(0).U16(0xFF).U16(0x8000 | 4 * w).Rect(0, 0, h, w)
+            .U16(0).U16(1).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0)
+            .U16(16).U16(32).U16(cmpCount).U16(8).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .Rect(0, 0, h, w).Rect(dst.t, dst.l, dst.b, dst.r).U16(mode);
+        foreach (var p in pixels) b.U8(p.a).U8(p.r).U8(p.g).U8(p.b);
+        return b;
+    }
+
+    // ---- mapping ----
+
+    [Fact]
+    public void MapPoint_ScalesAboutTheFrameCorner_RoundingMagnitudesHalfUp()
+    {
+        var from = new PictRect(0, 0, 3, 3);
+        var to = new PictRect(10, 20, 12, 22);
+        Assert.Equal((21, 11), PictureMapping.MapPoint(1, 2, from, to));      // 1*2/3 → 1 (0.67 rounds up), 2*2/3 → 1
+        Assert.Equal((19, 9), PictureMapping.MapPoint(-1, -2, from, to));     // negatives round their magnitude
+        Assert.Equal((22, 13), PictureMapping.MapPoint(4, 5, new PictRect(1, 1, 4, 4), to)); // (4-1)*2/3 → 2, (5-1)*2/3 → 3
+    }
+
+    [Fact]
+    public void ScaleSize_KeepsPositiveSizesAtLeastOnePixel()
+    {
+        var from = new PictRect(0, 0, 100, 100);
+        var to = new PictRect(0, 0, 10, 10);
+        Assert.Equal((1, 2), PictureMapping.ScaleSize(1, 20, from, to));
+        Assert.Equal((0, 0), PictureMapping.ScaleSize(0, -3, from, to));
+        Assert.Equal((7, 9), PictureMapping.ScaleSize(7, 9, from, from));
+    }
+
+    [Fact]
+    public void MapRegion_MapsInversionPoints()
+    {
+        // An L: rows 0-1 x 0-4, rows 2-3 x 0-2; doubled.
+        var l = Region.FromRect(new PictRect(0, 0, 2, 4)).Union(Region.FromRect(new PictRect(2, 0, 4, 2)));
+        var mapped = PictureMapping.MapRegion(l, new PictRect(0, 0, 4, 4), new PictRect(0, 0, 8, 8));
+        var expected = Region.FromRect(new PictRect(0, 0, 4, 8)).Union(Region.FromRect(new PictRect(4, 0, 8, 4)));
+        Assert.True(mapped.Xor(expected).IsEmpty);
+    }
+
+    // Extended v2 picture: 72 dpi frame 10x10, drawn at 144 dpi in a 20x20 source rect.
+    private static PictBuilder HighRes() =>
+        new PictBuilder().U16(0).Rect(0, 0, 10, 10).U16(0x0011).U16(0x02FF)
+            .U16(0x0C00).U16(0xFFFE).U16(0).U16(0x0090).U16(0).U16(0x0090).U16(0).Rect(0, 0, 20, 20).U16(0).U16(0);
+
+    [Fact]
+    public void Resolution_PictureFrame_ScalesTheDrawingToTheFrame()
+    {
+        var pict = HighRes().U16(0x0031).Rect(0, 0, 20, 10).U16(0x00FF).ToArray();   // left half
+
+        var native = PictReader.Decode(pict);
+        var frame = PictReader.Decode(pict, new PictDecodeOptions { Resolution = PictResolution.PictureFrame });
+
+        Assert.Equal((20, 20), (native.Width, native.Height));
+        Assert.Equal((10, 10), (frame.Width, frame.Height));
+        Assert.All(Picture(frame), row => Assert.Equal("#####.....", row));
+    }
+
+    [Fact]
+    public void Resolution_PictureFrame_ScalesThePenSize()
+    {
+        // PnSize 4x4 at 144 dpi is 2x2 at 72 dpi.
+        var pict = HighRes().U16(0x0007).Point(4, 4).U16(0x0030).Rect(0, 0, 20, 20).U16(0x00FF).ToArray();
+        var frame = PictReader.Decode(pict, new PictDecodeOptions { Resolution = PictResolution.PictureFrame });
+        Assert.Equal("##......##", Picture(frame)[5]);
+    }
+
+    [Fact]
+    public void OriginOpcode_RemapsTheClip()
+    {
+        // Clip h 1..3, then Origin dh 1: the clip lands on canvas x 0..2.
+        var bmp = Draw(4, 1, b => b.U16(0x0001).U16(10).Rect(0, 1, 1, 3).U16(0x000C).Point(0, 1).U16(0x0031).Rect(0, 1, 1, 5));
+        Assert.Equal(new[] { "##.." }, Picture(bmp));
+    }
+
+    // ---- CopyBits ----
+
+    [Fact]
+    public void CopyBits_Stretch_DoublesOneBitPixels()
+    {
+        var bmp = Draw(4, 2, b => Bits(b, 2, (0, 0, 1, 2), (0, 0, 1, 2), (0, 0, 2, 4), 0, 0x80, 0x00));
+        Assert.Equal(new[] { "##ww", "##ww" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void CopyBits_Shrink_OrsTheMergedOneBitPixels()
+    {
+        // 4x2 source with one black pixel at (3, 0) shrunk to 2x1: it survives in the right pixel.
+        var bmp = Draw(2, 1, b => Bits(b, 2, (0, 0, 2, 4), (0, 0, 2, 4), (0, 0, 1, 2), 0, 0x10, 0x00, 0x00, 0x00));
+        Assert.Equal(new[] { "w#" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void CopyBits_MaskRegion_RestrictsTheCopy()
+    {
+        var bmp = Draw(4, 1, b => b.Align().U16(0x0091).U16(2).Rect(0, 0, 1, 4).Rect(0, 0, 1, 4).Rect(0, 0, 1, 4).U16(0)
+            .U16(10).Rect(0, 1, 1, 3)                                   // maskRgn: x 1..2
+            .U8(0xF0).U8(0));
+        Assert.Equal(new[] { ".##." }, Picture(bmp));
+    }
+
+    [Fact]
+    public void CopyBits_SrcOr_LeavesWhiteSourcePixelsAlone()
+    {
+        var bmp = Draw(2, 1, b => Bits(b.U16(0x001A).Rgb(0xFFFF, 0, 0).U16(0x0031).Rect(0, 0, 1, 2).U16(0x001A).Rgb(0, 0, 0),
+            2, (0, 0, 1, 2), (0, 0, 1, 2), (0, 0, 1, 2), 1, 0x80, 0x00));
+        Assert.Equal(new[] { "#r" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void CopyBits_ColorizesOneBitSourcesWithForeAndBackColors()
+    {
+        var bmp = Draw(2, 1, b => Bits(b.U16(0x001A).Rgb(0xFFFF, 0, 0).U16(0x001B).Rgb(0, 0, 0xFFFF),
+            2, (0, 0, 1, 2), (0, 0, 1, 2), (0, 0, 1, 2), 0, 0x80, 0x00));
+        Assert.Equal(new[] { "rb" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void CopyBits_NotSrcCopy_InvertsTheSource()
+    {
+        var bmp = Draw(2, 1, b => Bits(b, 2, (0, 0, 1, 2), (0, 0, 1, 2), (0, 0, 1, 2), 4, 0x80, 0x00));
+        Assert.Equal(new[] { "w#" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void CopyBits_DeepSourceStretch_RepeatsPixels()
+    {
+        var bmp = Draw(4, 1, b => Direct32(b, 2, 1, (0, 0, 1, 4), 0, 3, (0, 255, 0, 0), (0, 0, 0, 255)));
+        Assert.Equal(new[] { "rrbb" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void CopyBits_DeepSource_ColorizesWithForeAndBackColors()
+    {
+        // Black source pixels take the foreground color, white ones the background color.
+        var bmp = Draw(2, 1, b => Direct32(b.U16(0x001A).Rgb(0, 0xFFFF, 0).U16(0x001B).Rgb(0xFFFF, 0, 0),
+            2, 1, (0, 0, 1, 2), 0, 3, (0, 0, 0, 0), (0, 255, 255, 255)));
+        Assert.Equal(new[] { "gr" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void CopyBits_Transparent_SkipsBackgroundColoredPixels()
+    {
+        var bmp = Draw(2, 1, b => Direct32(b.U16(0x001A).Rgb(0xFFFF, 0, 0).U16(0x0031).Rect(0, 0, 1, 2).U16(0x001A).Rgb(0, 0, 0),
+            2, 1, (0, 0, 1, 2), 36, 3, (0, 255, 255, 255), (0, 0, 255, 0)));
+        Assert.Equal(new[] { "rg" }, Picture(bmp));
+    }
+
+    [Theory]
+    [InlineData(false, 255)]
+    [InlineData(true, 0x80)]
+    public void CopyBits_PreserveAlpha_KeepsTheAlphaChannel(bool preserve, int expectedAlpha)
+    {
+        var bmp = Draw(1, 1, b => Direct32(b, 1, 1, (0, 0, 1, 1), 0, 4, (0x80, 10, 20, 30)),
+            new PictDecodeOptions { PreserveAlpha = preserve });
+        Assert.Equal(new PictColor(10, 20, 30, (byte)expectedAlpha), bmp[0, 0]);
+    }
+
+    // ---- StretchBits geometry ----
+
+    [Fact]
+    public void ColumnGroups_OneAndAHalf_UsesThePairPattern()
+    {
+        // x1.5: source pair (a, b) → a, b, b.
+        Assert.Equal(new[] { 0, 1, 1, 2, 3, 3 }, QuickDraw.Pict.Bits.ColumnGroups(4, 6).Select(g => g.first).ToArray());
+    }
+
+    [Fact]
+    public void ColumnGroups_ThreeQuarters_MergesTheMiddlePair()
+    {
+        Assert.Equal(new[] { (0, 1), (1, 3), (3, 4) }, QuickDraw.Pict.Bits.ColumnGroups(4, 3));
+    }
+
+    [Fact]
+    public void RowGroups_ShrinkMergesRowsAndStretchRepeatsThem()
+    {
+        Assert.Equal(new[] { new[] { 0, 1 }, new[] { 2, 3 } }, QuickDraw.Pict.Bits.RowGroups(0, 4, 2, 4));
+        Assert.Equal(new[] { new[] { 0 }, new[] { 0 }, new[] { 1 }, new[] { 1 } }, QuickDraw.Pict.Bits.RowGroups(0, 2, 4, 2));
+    }
+}

@@ -55,6 +55,9 @@ namespace QuickDraw.Pict
             }
         }
 
+        // The alpha byte of a 32-bit pixel (the first of its four; meaningful only when CmpCount is 4).
+        public byte GetAlpha(int x, int y) => PixelSize == 32 ? Data[y * RowBytes + 4 * x] : (byte)255;
+
         // BitsRect/BitsRgn/PackBitsRect/PackBitsRgn operands up to (not including) srcRect: a 1-bit BitMap, or a
         // PixMap + ColorTable when rowBytes has its high bit set.
         public static PixMap ReadIndexedHeader(BinaryReader b)

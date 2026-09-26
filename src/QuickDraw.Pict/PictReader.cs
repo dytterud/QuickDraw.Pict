@@ -36,7 +36,8 @@ namespace QuickDraw.Pict
 
         /// <summary>
         /// Decodes a picture, either bare (as stored in a <c>PICT</c> resource) or as a <c>.pict</c> file with its
-        /// 512-byte application header. The canvas covers <see cref="PictInfo.Bounds"/>; pixels the picture never
+        /// 512-byte application header. The canvas covers <see cref="PictInfo.Bounds"/>, or <see cref="PictInfo.PictureFrame"/>
+        /// with <see cref="PictResolution.PictureFrame"/>; pixels the picture never
         /// draws stay transparent.
         /// </summary>
         /// <param name="data">The picture bytes.</param>
@@ -51,10 +52,12 @@ namespace QuickDraw.Pict
             using var ms = new MemoryStream(data);
             using var b = new BinaryReader(ms);
 
+            options ??= PictDecodeOptions.Default;
             var info = PictHeader.Parse(b, data.Length, out bool v1);
             var bounds = info.Bounds;
-            var canvas = new PictBitmap(Math.Max(1, bounds.Width), Math.Max(1, bounds.Height)) { Info = info };
-            var port = new GrafPort(canvas, bounds, options ?? PictDecodeOptions.Default);
+            var canvasRect = options.Resolution == PictResolution.PictureFrame ? info.PictureFrame : bounds;
+            var canvas = new PictBitmap(Math.Max(1, canvasRect.Width), Math.Max(1, canvasRect.Height)) { Info = info };
+            var port = new GrafPort(canvas, bounds, options);
             {
                 while (b.BaseStream.Position < b.BaseStream.Length)
                 {
@@ -75,18 +78,18 @@ namespace QuickDraw.Pict
                         case 0x0099:                        // PackBitsRgn
                         {
                             var pm = PixMap.ReadIndexedHeader(b);
-                            var (src, dst) = ReadCopyBitsTail(b, hasRegion: (op & 0x01) != 0);
+                            var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: (op & 0x01) != 0);
                             pm.ReadPixData(b, packedOpcode: (op & 0x08) != 0);
-                            Blit(pm, src, port.Map(dst), canvas);
+                            port.CopyBits(pm, src, dst, mode, mask);
                             break;
                         }
                         case 0x009A:                        // DirectBitsRect
                         case 0x009B:                        // DirectBitsRgn
                         {
                             var pm = PixMap.ReadDirectHeader(b);
-                            var (src, dst) = ReadCopyBitsTail(b, hasRegion: op == 0x009B);
+                            var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: op == 0x009B);
                             pm.ReadPixData(b, packedOpcode: true);
-                            Blit(pm, src, port.Map(dst), canvas);
+                            port.CopyBits(pm, src, dst, mode, mask);
                             break;
                         }
                         case 0x00A0:                        // ShortComment
@@ -112,14 +115,13 @@ namespace QuickDraw.Pict
         }
 
         // srcRect, dstRect, mode and (Rgn variants) maskRgn, which sit between a CopyBits PixMap and its PixData.
-        // The mask is parsed now and applied with the transfer mode once CopyBits honours them.
-        private static (PictRect src, PictRect dst) ReadCopyBitsTail(BinaryReader b, bool hasRegion)
+        private static (PictRect src, PictRect dst, int mode, Region? mask) ReadCopyBitsTail(BinaryReader b, bool hasRegion)
         {
             var src = b.ReadRectBE();
             var dst = b.ReadRectBE();
-            b.ReadU16BE();                                  // transfer mode
-            if (hasRegion) Region.Read(b);                  // mask region
-            return (src, dst);
+            int mode = b.ReadU16BE();
+            var mask = hasRegion ? Region.Read(b) : null;
+            return (src, dst, mode, mask);
         }
 
         // Applies the drawing and graphics-state opcodes to the port. Returns false if the opcode isn't one we
@@ -139,9 +141,9 @@ namespace QuickDraw.Pict
                 case 0x0003: port.TextFontId = b.ReadU16BE(); return true;               // TxFont
                 case 0x0004: port.TextFace = b.ReadByte(); return true;                  // TxFace
                 case 0x0005: port.TextMode = b.ReadU16BE(); return true;                 // TxMode
-                case 0x0007: { var p = ReadPoint(b); port.PenH = p.h; port.PenV = p.v; return true; }     // PnSize
+                case 0x0007: { var p = ReadPoint(b); port.PenSize(p.h, p.v); return true; }              // PnSize
                 case 0x0008: port.PenMode = b.ReadU16BE(); return true;                  // PnMode
-                case 0x000B: { var p = ReadPoint(b); port.OvalW = p.h; port.OvalH = p.v; return true; }   // OvSize
+                case 0x000B: { var p = ReadPoint(b); port.OvalSize(p.h, p.v); return true; }             // OvSize
                 case 0x000C: { var p = ReadPoint(b); port.Origin(p.h, p.v); return true; }                // Origin
                 case 0x000D: port.TextSize = b.ReadU16BE(); return true;                 // TxSize
                 case 0x000E: port.ForeColor = ClassicColor((int)b.ReadU32BE(), true); return true;       // FgColor
@@ -235,24 +237,6 @@ namespace QuickDraw.Pict
             }
             if (size > 10 && (size - 10) % 4 != 0) b.Skip((size - 10) % 4);
             return bbox.IsEmpty ? Array.Empty<(int h, int v)>() : pts;
-        }
-
-        // Copy the srcRect part of a decoded PixMap to its dstRect (canvas space) on the canvas.
-        private static void Blit(PixMap pm, PictRect src, PictRect dst, PictBitmap canvas)
-        {
-            for (int y = 0; y < src.Height; y++)
-            {
-                int sy = (src.Top - pm.Bounds.Top) + y;
-                int dy = dst.Top + y;
-                if (sy < 0 || sy >= pm.Height || dy < 0 || dy >= canvas.Height) continue;
-                for (int x = 0; x < src.Width; x++)
-                {
-                    int sx = (src.Left - pm.Bounds.Left) + x;
-                    int dx = dst.Left + x;
-                    if (sx < 0 || sx >= pm.Width || dx < 0 || dx >= canvas.Width) continue;
-                    canvas[dx, dy] = pm.GetPixel(sx, sy);
-                }
-            }
         }
 
         // A QuickDraw Region or Polygon: u16 total size (including itself) + bounding Rect +

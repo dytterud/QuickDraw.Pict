@@ -29,7 +29,7 @@ namespace QuickDraw.Pict.ImageSharp
             var size = new Size(System.Math.Max(1, info.Bounds.Width), System.Math.Max(1, info.Bounds.Height));
             var metadata = new ImageMetadata();
             if (!options.SkipMetadata)
-                ApplyMetadata(metadata, info);
+                ApplyMetadata(metadata, info, PictResolution.Native);
             return new ImageInfo(new PixelTypeInfo(32), size, metadata);
         }
 
@@ -38,7 +38,12 @@ namespace QuickDraw.Pict.ImageSharp
         {
             DecoderOptions general = options.GeneralOptions;
             Configuration configuration = general.Configuration;
-            var pictOptions = new PictDecodeOptions { TextFallback = new ImageSharpTextFallback(configuration, options.FontResolver) };
+            var pictOptions = new PictDecodeOptions
+            {
+                TextFallback = new ImageSharpTextFallback(configuration, options.FontResolver),
+                Resolution = options.Resolution,
+                PreserveAlpha = options.PreserveAlpha,
+            };
             PictBitmap bitmap = Guard(() => PictReader.Decode(stream, pictOptions, cancellationToken));
 
             Image<Rgba32> rgba = Image.LoadPixelData<Rgba32>(configuration, bitmap.Pixels, bitmap.Width, bitmap.Height);
@@ -54,7 +59,7 @@ namespace QuickDraw.Pict.ImageSharp
             }
 
             if (!general.SkipMetadata && bitmap.Info != null)
-                ApplyMetadata(image.Metadata, bitmap.Info);
+                ApplyMetadata(image.Metadata, bitmap.Info, options.Resolution);
             ScaleToTargetSize(general, image);
             return image;
         }
@@ -67,13 +72,14 @@ namespace QuickDraw.Pict.ImageSharp
         protected override PictDecoderOptions CreateDefaultSpecializedOptions(DecoderOptions options) =>
             new PictDecoderOptions { GeneralOptions = options };
 
-        // Resolution from the picture header (72 dpi unless an extended version 2 header says otherwise) and the
-        // embedded ICC profile, if the picture carries one.
-        private static void ApplyMetadata(ImageMetadata metadata, PictInfo info)
+        // Resolution from the picture header (72 dpi unless an extended version 2 header says otherwise, and always 72
+        // when drawn at its picture frame) and the embedded ICC profile, if the picture carries one.
+        private static void ApplyMetadata(ImageMetadata metadata, PictInfo info, PictResolution resolution)
         {
+            bool frame = resolution == PictResolution.PictureFrame;
             metadata.ResolutionUnits = PixelResolutionUnit.PixelsPerInch;
-            metadata.HorizontalResolution = info.HorizontalResolution;
-            metadata.VerticalResolution = info.VerticalResolution;
+            metadata.HorizontalResolution = frame ? 72 : info.HorizontalResolution;
+            metadata.VerticalResolution = frame ? 72 : info.VerticalResolution;
             if (info.IccProfile is { Length: > 0 } icc)
                 metadata.IccProfile = new IccProfile(icc);
         }

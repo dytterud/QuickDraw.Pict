@@ -31,6 +31,11 @@ PictBitmap drawn  = PictReader.Decode(bytes, new PictDecodeOptions { TextFallbac
 PictWriter.Write(stream, bitmap);
 ```
 
+High-resolution (extended v2) pictures decode at their native resolution by default. `Resolution =
+PictResolution.PictureFrame` draws them at their 72 dpi picture frame instead, scaled the way `DrawPicture` does it. That
+includes pen and oval sizes and CopyBits stretching. `PreserveAlpha = true` keeps the alpha channel of 32-bit pixel maps
+that carry one. Both options exist on `PictDecodeOptions` and on the ImageSharp `PictDecoderOptions`.
+
 ## Build
 
 ```
