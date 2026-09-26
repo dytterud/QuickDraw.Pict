@@ -6,7 +6,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>QuickDraw.Pict</PackageId>
-    <Description>Dependency-free reader and writer for Apple QuickDraw PICT (v1/v2) images. Decodes to a plain RGBA buffer; vector and text opcodes are handed to a pluggable renderer.</Description>
+    <Description>Dependency-free reader and writer for Apple QuickDraw PICT (v1/v2) images. Decodes to a plain RGBA buffer with a software QuickDraw engine: regions, patterns, pen and transfer modes; text through a pluggable rasterizer.</Description>
     <PackageTags>pict;quickdraw;macintosh;image;decoder;encoder</PackageTags>
   </PropertyGroup>
 

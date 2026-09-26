@@ -6,7 +6,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>QuickDraw.Pict.ImageSharp</PackageId>
-    <Description>SixLabors.ImageSharp format plugin for Apple QuickDraw PICT (v1/v2): detection, decoding (including vector and text opcodes via ImageSharp.Drawing) and encoding. Built on QuickDraw.Pict.</Description>
+    <Description>SixLabors.ImageSharp format plugin for Apple QuickDraw PICT (v1/v2): detection, decoding (QuickDraw-exact shapes, patterns and transfer modes; text via SixLabors.Fonts) and encoding. Built on QuickDraw.Pict.</Description>
     <PackageTags>imagesharp;pict;quickdraw;macintosh;image;decoder;encoder</PackageTags>
   </PropertyGroup>
 

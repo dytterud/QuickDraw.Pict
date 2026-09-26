@@ -78,48 +78,24 @@ public class PictReaderTests
     }
 
     [Fact]
-    public void VectorOpcodes_WithoutRenderer_AreConsumedAndSkipped()
-    {
-        var pict = PictBuilder.V2(0, 0, 4, 4)
-            .U16(0x001A).Rgb(0xFFFF, 0, 0)
-            .U16(0x0031).Rect(1, 1, 3, 3)
-            .U16(0x00FF).ToArray();
-
-        var bmp = PictReader.Decode(pict);
-
-        Assert.Equal((4, 4), (bmp.Width, bmp.Height));
-        Assert.All(bmp.Pixels, b => Assert.Equal(0, b));   // untouched canvas stays transparent
-    }
-
-    [Fact]
-    public void ShapeOpcodes_ReachRendererInCanvasSpaceWithQuickDrawVerbs()
+    public void ShapeOpcodes_DrawInCanvasSpace()
     {
         // Frame origin (top 10, left 20) is subtracted, so the canvas starts at (0,0).
         var pict = PictBuilder.V2(10, 20, 14, 24)
             .U16(0x001A).Rgb(0xFFFF, 0, 0x8000)          // RGBFgCol
-            .U16(0x001B).Rgb(0, 0xFFFF, 0)               // RGBBkCol
             .U16(0x0031).Rect(11, 21, 13, 23)            // PaintRect
-            .U16(0x0007).Point(2, 3)                     // PnSize (h = 3)
-            .U16(0x0030).Rect(10, 20, 12, 22)            // FrameRect
-            .U16(0x003A)                                 // EraseSameRect
-            .U16(0x0053).Rect(10, 20, 14, 24)            // InvertOval
             .U16(0x00FF).ToArray();
-        var renderer = new RecordingRenderer();
 
-        PictReader.Decode(pict, _ => renderer);
+        var bmp = PictReader.Decode(pict);
 
-        var fore = new PictColor(255, 0, 128);
-        var back = new PictColor(0, 255, 0);
-        Assert.Collection(renderer.Calls,
-            c => Assert.Equal(("Fill", PictShapeKind.Rectangle, new PictRectangleF(1, 1, 2, 2), fore, 0), c),
-            c => Assert.Equal(("Frame", PictShapeKind.Rectangle, new PictRectangleF(0, 0, 2, 2), fore, 3), c),
-            c => Assert.Equal(("Fill", PictShapeKind.Rectangle, new PictRectangleF(0, 0, 2, 2), back, 0), c),
-            c => Assert.Equal(("Invert", PictShapeKind.Oval, new PictRectangleF(0, 0, 4, 4), default(PictColor), 0), c));
-        Assert.True(renderer.Disposed);
+        Assert.Equal(new PictColor(0, 0, 0, 0), bmp[0, 0]);
+        Assert.Equal(new PictColor(255, 0, 128), bmp[1, 1]);
+        Assert.Equal(new PictColor(255, 0, 128), bmp[2, 2]);
+        Assert.Equal(new PictColor(0, 0, 0, 0), bmp[3, 3]);
     }
 
     [Fact]
-    public void TextOpcodes_ReachRendererWithStyleAndAdvanceThePen()
+    public void TextOpcodes_PassStyleToTheFallback()
     {
         var pict = PictBuilder.V2(0, 0, 20, 40)
             .U16(0x0003).U16(21)                         // TxFont
@@ -128,38 +104,25 @@ public class PictReaderTests
             .U16(0x0028).Point(15, 2).Text("Hi").Align() // LongText at h=2, v=15
             .U16(0x0029).U8(3).Text("!").Align()         // DHText: 3 past the pen
             .U16(0x00FF).ToArray();
-        var renderer = new RecordingRenderer { TextAdvance = 10.4f };
+        var fallback = new RecordingFallback();
 
-        PictReader.Decode(pict, _ => renderer);
+        PictReader.Decode(pict, new PictDecodeOptions { TextFallback = fallback });
 
         var style = new PictTextStyle(21, 1, 9);
-        // pen after "Hi" = 2 + round(10.4) = 12; DHText adds 3.
-        Assert.Equal(new[] { ("Hi", new PictPoint(2, 15), style), ("!", new PictPoint(15, 15), style) }, renderer.Texts);
+        Assert.Equal(new[] { ("Hi", style), ("!", style) }, fallback.Calls);
     }
 
     private static PictColor[] Row(PictBitmap bmp, int y) =>
         Enumerable.Range(0, bmp.Width).Select(x => bmp[x, y]).ToArray();
 
-    private sealed class RecordingRenderer : IPictRenderer, IDisposable
+    private sealed class RecordingFallback : IPictTextFallback
     {
-        public readonly List<(string Op, PictShapeKind Kind, PictRectangleF Bounds, PictColor Color, int Pen)> Calls = new();
-        public readonly List<(string Text, PictPoint Origin, PictTextStyle Style)> Texts = new();
-        public float TextAdvance;
-        public bool Disposed;
+        public readonly List<(string Text, PictTextStyle Style)> Calls = new();
 
-        public void Fill(in PictShape shape, PictColor color, PictRectangleF? clip) =>
-            Calls.Add(("Fill", shape.Kind, shape.Bounds, color, 0));
-        public void Frame(in PictShape shape, PictColor color, int penWidth, PictRectangleF? clip) =>
-            Calls.Add(("Frame", shape.Kind, shape.Bounds, color, penWidth));
-        public void Invert(in PictShape shape) =>
-            Calls.Add(("Invert", shape.Kind, shape.Bounds, default, 0));
-        public void DrawPolyline(ReadOnlySpan<PictPoint> points, PictColor color, int penWidth, PictRectangleF? clip) =>
-            Calls.Add(("Polyline", PictShapeKind.Polygon, default, color, penWidth));
-        public float DrawText(string text, PictPoint baselineOrigin, PictTextStyle style, PictColor color, PictRectangleF? clip)
+        public PictTextMask? Render(string text, PictTextStyle style)
         {
-            Texts.Add((text, baselineOrigin, style));
-            return TextAdvance;
+            Calls.Add((text, style));
+            return new PictTextMask(1, 1, 0, 1, new byte[] { 1 }, 10.4f);
         }
-        public void Dispose() => Disposed = true;
     }
 }

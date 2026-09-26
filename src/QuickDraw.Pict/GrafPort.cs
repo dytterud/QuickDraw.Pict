@@ -3,177 +3,217 @@ using System.Collections.Generic;
 
 namespace QuickDraw.Pict
 {
-    // QuickDraw drawing state for the PICT reader. Keeps pen/colors/origin/clip/"same shape" memory and
-    // resolves each shape opcode to canvas-space geometry, which an IPictRenderer (if any) rasterizes.
-    // Coordinates arrive in picFrame space; we translate to canvas space (minus frame origin and the
-    // QuickDraw drawing origin). verb: 0 frame, 1 paint, 2 erase, 3 invert, 4 fill.
+    // The QuickDraw drawing state of a picture being played back, and its drawing verbs. Coordinates arrive in picture
+    // space and are mapped to canvas pixels when an opcode is read (the canvas covers the picture's bounds; the Origin
+    // opcode shifts the mapping cumulatively), so pen locations and "same shape" memory are in canvas space, as
+    // Executor's DrawPicture keeps them in destination space. Shapes are rasterized as regions (RegionShapes) and
+    // painted through a pattern and transfer mode (Painter). verb: 0 frame, 1 paint, 2 erase, 3 invert, 4 fill.
     internal sealed class GrafPort
     {
-        public readonly PictBitmap Canvas;
-        private readonly IPictRenderer? renderer;
+        private readonly PictBitmap canvas;
+        private readonly PictDecodeOptions options;
         private readonly int frameLeft, frameTop;
+        private int originH, originV;
 
-        public PictColor ForeColor = new PictColor(0, 0, 0, 255);
-        public PictColor BackColor = new PictColor(255, 255, 255, 255);
-        public int PenWidth = 1;
-        public int OvalW, OvalH;                 // round-rect corner diameters
-        public int OriginH, OriginV;             // QuickDraw SetOrigin offset
-        public (int top, int left, int bottom, int right)? Clip;  // null = whole canvas
+        // Port state as DrawPicture initializes it (Executor C_DrawPicture): black on white, pen 1x1 patCopy with a
+        // black pen and fill pattern and a white background pattern, text mode srcOr, OpColor black.
+        public PictColor ForeColor = new PictColor(0, 0, 0);
+        public PictColor BackColor = new PictColor(255, 255, 255);
+        public (ushort r, ushort g, ushort b) OpColor;
+        public PictColor HiliteColor;
+        private bool hilitePending;
 
-        // Patterns as DrawPicture initializes them (Executor C_DrawPicture): background white, pen and fill black.
         public Pattern BkPat = Pattern.White;
         public Pattern PnPat = Pattern.Black;
         public Pattern FillPat = Pattern.Black;
+        public int PenH = 1, PenV = 1;
+        public int PenMode = TransferModes.PatCopy;
+        public int OvalW, OvalH;
+        private int penX, penY;                                   // canvas space
 
-        public PictPoint Pen;                    // current pen position (canvas space)
-        public (int top, int left, int bottom, int right) LastRect;  // for the "same shape" opcodes
-        public PictPoint[]? LastPoly;            // for the "same poly" opcodes
-        public (int top, int left, int bottom, int right) LastRegion;  // for the "same region" opcodes
-        public Region? ClipRegion;                // full clip region (0x0001)
-        public Region LastRegionShape = Region.Empty;  // full region of the last *Rgn shape
+        private Region? clip;                                     // canvas space; null = no clip
+        private PictRect lastRect;                                // canvas space, for the "same shape" opcodes
+        private (int h, int v)[]? lastPoly;
+        private Region lastRegion = Region.Empty;
 
-        public int TextFontId, TextFace, TextSize = 12;   // text state
-        public int TextH, TextV;                          // current text pen (QuickDraw coords)
+        public int TextFontId, TextFace, TextSize, TextMode = TransferModes.SrcOr;
+        private int textX, textY;                                 // text origin, canvas space
+        private readonly Dictionary<int, string> fontNames = new Dictionary<int, string>();
 
-        public GrafPort(PictBitmap canvas, IPictRenderer? renderer, int frameLeft, int frameTop)
+        public GrafPort(PictBitmap canvas, PictRect bounds, PictDecodeOptions options)
         {
-            Canvas = canvas;
-            this.renderer = renderer;
-            this.frameLeft = frameLeft;
-            this.frameTop = frameTop;
+            this.canvas = canvas;
+            this.options = options;
+            frameLeft = bounds.Left;
+            frameTop = bounds.Top;
+            HiliteColor = options.HiliteColor;
         }
 
-        // Translate a QuickDraw (h,v) coordinate to canvas pixel space.
-        public float Cx(int h) => h - frameLeft - OriginH;
-        public float Cy(int v) => v - frameTop - OriginV;
-        public PictPoint P(int h, int v) => new PictPoint(Cx(h), Cy(v));
+        private PortColors Colors => new PortColors(ForeColor, BackColor, OpColor, HiliteColor);
 
-        // The clip rect in canvas space, or null when it covers the whole canvas.
-        private PictRectangleF? CanvasClip()
+        // ---- coordinate mapping ----
+
+        public int MapH(int h) => h - frameLeft - originH;
+        public int MapV(int v) => v - frameTop - originV;
+        public PictRect Map(PictRect r) => new PictRect(MapV(r.Top), MapH(r.Left), MapV(r.Bottom), MapH(r.Right));
+        private Region Map(Region r) => r.Offset(-(frameLeft + originH), -(frameTop + originV));
+
+        // Origin opcode: Executor origin() offsets the source picture frame, so later coordinates shift by -dh, -dv.
+        public void Origin(int dh, int dv)
         {
-            if (Clip is { } c && !(c.left <= frameLeft && c.top <= frameTop &&
-                                   c.right - frameLeft >= Canvas.Width && c.bottom - frameTop >= Canvas.Height))
-                return new PictRectangleF(Cx(c.left), Cy(c.top),
-                    Math.Max(0, c.right - c.left), Math.Max(0, c.bottom - c.top));
-            return null;
+            originH += dh;
+            originV += dv;
+            textX -= dh;
+            textY -= dv;
         }
 
-        private int PenPixels => Math.Max(1, PenWidth);
+        // ---- state ----
 
-        // Fill/stroke a shape according to the verb.
-        private void RenderShape(in PictShape shape, int verb)
+        public void SetClip(Region pictureRegion) => clip = Map(pictureRegion);
+        public void HiliteMode() => hilitePending = true;
+        public void DefaultHilite() => HiliteColor = options.HiliteColor;
+        public void FontName(int fontId, string name) => fontNames[fontId] = name;
+
+        // ---- shapes ----
+
+        public void Rect(PictRect? pictureRect, int verb)
         {
-            if (renderer == null) return;
+            if (pictureRect is { } pr) lastRect = Map(pr);
+            var r = lastRect;
+            if (r.IsEmpty) { Done(); return; }
+            Shape(verb, () => RegionShapes.Rect(r), () => RegionShapes.FrameRect(r, PenH, PenV));
+        }
+
+        public void RoundRect(PictRect? pictureRect, int verb)
+        {
+            if (pictureRect is { } pr) lastRect = Map(pr);
+            var r = lastRect;
+            if (r.IsEmpty) { Done(); return; }
+            Shape(verb, () => RegionShapes.RoundRect(r, OvalW, OvalH),
+                () => RegionShapes.FrameRoundRect(r, OvalW, OvalH, PenH, PenV));
+        }
+
+        public void Oval(PictRect? pictureRect, int verb)
+        {
+            if (pictureRect is { } pr) lastRect = Map(pr);
+            var r = lastRect;
+            if (r.IsEmpty) { Done(); return; }
+            Shape(verb, () => RegionShapes.Oval(r), () => RegionShapes.FrameOval(r, PenH, PenV));
+        }
+
+        public void Arc(PictRect? pictureRect, int startAngle, int arcAngle, int verb)
+        {
+            if (pictureRect is { } pr) lastRect = Map(pr);
+            var r = lastRect;
+            if (r.IsEmpty) { Done(); return; }
+            Shape(verb, () => RegionShapes.Arc(r, startAngle, arcAngle),
+                () => RegionShapes.FrameArc(r, startAngle, arcAngle, PenH, PenV));
+        }
+
+        // Polygons (picture-space points). Framing draws each edge as a line and does not close the polygon.
+        public void Polygon((int h, int v)[]? picturePoints, int verb)
+        {
+            if (picturePoints != null)
+            {
+                lastPoly = new (int h, int v)[picturePoints.Length];
+                for (int i = 0; i < picturePoints.Length; i++)
+                    lastPoly[i] = (MapH(picturePoints[i].h), MapV(picturePoints[i].v));
+            }
+            var pts = lastPoly;
+            if (pts == null || pts.Length < 2) { Done(); return; }
+            if (verb == 0)
+            {
+                for (int i = 1; i < pts.Length; i++)
+                    PaintLine(pts[i - 1].h, pts[i - 1].v, pts[i].h, pts[i].v);
+                Done();
+                return;
+            }
+            Shape(verb, () => RegionShapes.Polygon(pts), () => Region.Empty);
+        }
+
+        public void Rgn(Region? pictureRegion, int verb)
+        {
+            if (pictureRegion != null) lastRegion = Map(pictureRegion);
+            var rgn = lastRegion;
+            Shape(verb, () => rgn, () => RegionShapes.FrameRegion(rgn, PenH, PenV));
+        }
+
+        // StdRgn: frame paints the frame with the pen, paint uses the pen pattern and mode, erase the background
+        // pattern (patCopy), invert XORs with black (hilite when pending), fill the fill pattern (patCopy).
+        private void Shape(int verb, Func<Region> interior, Func<Region> frame)
+        {
+            var colors = Colors;
             switch (verb)
             {
-                case 0: renderer.Frame(shape, ForeColor, PenPixels, CanvasClip()); break;
-                case 1: renderer.Fill(shape, ForeColor, CanvasClip()); break;     // paint
-                case 4: renderer.Fill(shape, ForeColor, CanvasClip()); break;     // fill
-                case 2: renderer.Fill(shape, BackColor, CanvasClip()); break;     // erase
-                case 3: renderer.Invert(shape); break;                            // invert
+                case 0: Painter.FillRegion(canvas, frame(), clip, PnPat, PenMode, hilitePending, colors); break;
+                case 1: Painter.FillRegion(canvas, interior(), clip, PnPat, PenMode, hilitePending, colors); break;
+                case 2: Painter.FillRegion(canvas, interior(), clip, BkPat, TransferModes.PatCopy, false, colors); break;
+                case 3: Painter.FillRegion(canvas, interior(), clip, Pattern.Black, TransferModes.PatXor, hilitePending, colors); break;
+                case 4: Painter.FillRegion(canvas, interior(), clip, FillPat, TransferModes.PatCopy, false, colors); break;
             }
+            Done();
         }
 
-        // ---- shapes (all take QuickDraw rect coords; verb selects frame/paint/erase/invert/fill) ----
+        // Color QuickDraw resets the highlight bit after every drawing operation.
+        private void Done() => hilitePending = false;
 
-        public void Rect((int top, int left, int bottom, int right) r, int verb)
+        // ---- lines ----
+
+        public void Line(int h1, int v1, int h2, int v2)
         {
-            LastRect = r;
-            RenderShape(RectShape(r), verb);
+            penX = MapH(h1);
+            penY = MapV(v1);
+            LineTo(h2, v2);
         }
 
-        public void SameRect(int verb) => RenderShape(RectShape(LastRect), verb);
+        public void LineTo(int h, int v) => LineToCanvas(MapH(h), MapV(v));
 
-        public void RoundRect((int top, int left, int bottom, int right) r, int verb)
+        public void LineBy(int dh, int dv) => LineToCanvas(penX + dh, penY + dv);
+
+        private void LineToCanvas(int x, int y)
         {
-            LastRect = r;
-            RenderShape(RoundRectShape(r), verb);
+            PaintLine(penX, penY, x, y);
+            penX = x;
+            penY = y;
+            Done();
         }
 
-        public void SameRoundRect(int verb) => RenderShape(RoundRectShape(LastRect), verb);
-
-        public void Oval((int top, int left, int bottom, int right) r, int verb)
+        // C_StdLine paints the pen-swept region with the pen pattern; Boolean pen modes act as pattern modes.
+        private void PaintLine(int x1, int y1, int x2, int y2)
         {
-            LastRect = r;
-            RenderShape(OvalShape(r), verb);
+            var region = RegionShapes.Line(x1, y1, x2, y2, PenH, PenV);
+            int mode = PenMode < TransferModes.Blend ? (PenMode % 0x40) | 8 : PenMode;
+            Painter.FillRegion(canvas, region, clip, PnPat, mode, hilitePending, Colors);
         }
 
-        public void SameOval(int verb) => RenderShape(OvalShape(LastRect), verb);
+        // ---- text ----
 
-        public void Arc((int top, int left, int bottom, int right) r, int startAngle, int arcAngle, int verb)
+        // LongText sets the text origin; DH/DV/DHDV text offset it from the previous origin (Executor longtext /
+        // dhtext / dvtext / dhdvtext). Drawing does not move the text origin.
+        public void LongText(int h, int v, string s)
         {
-            LastRect = r;
-            RenderShape(ArcShape(r, startAngle, arcAngle, verb == 0), verb);
+            textX = MapH(h);
+            textY = MapV(v);
+            DrawText(s);
         }
 
-        public void SameArc(int startAngle, int arcAngle, int verb) =>
-            RenderShape(ArcShape(LastRect, startAngle, arcAngle, verb == 0), verb);
-
-        public void Polygon(PictPoint[] pts, int verb)
+        public void OffsetText(int dh, int dv, string s)
         {
-            if (pts.Length < 2) return;
-            if (verb == 0)
-                renderer?.DrawPolyline(pts, ForeColor, PenPixels, CanvasClip());
-            else
-                RenderShape(PictShape.Polygon(pts), verb);
+            textX += dh;
+            textY += dv;
+            DrawText(s);
         }
 
-        public void Line(PictPoint from, PictPoint to)
+        private void DrawText(string s)
         {
-            renderer?.DrawPolyline(new[] { from, to }, ForeColor, PenPixels, CanvasClip());
-            Pen = to;
-        }
-
-        public void RegionRect((int top, int left, int bottom, int right) bbox, int verb)
-        {
-            // We don't rasterize region run data; approximate a region as its bounding rect.
-            RenderShape(RectShape(bbox), verb);
-        }
-
-        // ---- text (the renderer picks a font for the QuickDraw font id/face/size) ----
-
-        public void SetTextLoc(int h, int v) { TextH = h; TextV = v; }
-        public void OffsetText(int dh, int dv) { TextH += dh; TextV += dv; }
-
-        public void DrawText(string s)
-        {
-            if (string.IsNullOrEmpty(s) || renderer == null) return;
-            float advance = renderer.DrawText(s, new PictPoint(Cx(TextH), Cy(TextV)),
-                new PictTextStyle(TextFontId, TextFace, TextSize), ForeColor, CanvasClip());
-            TextH += (int)Math.Round(advance);
-        }
-
-        // ---- shape builders ----
-
-        private PictRectangleF Bounds((int top, int left, int bottom, int right) r) =>
-            new PictRectangleF(Cx(r.left), Cy(r.top), Math.Max(0, r.right - r.left), Math.Max(0, r.bottom - r.top));
-
-        private PictShape RectShape((int top, int left, int bottom, int right) r) => PictShape.Rectangle(Bounds(r));
-
-        private PictShape OvalShape((int top, int left, int bottom, int right) r) => PictShape.Oval(Bounds(r));
-
-        private PictShape RoundRectShape((int top, int left, int bottom, int right) r)
-        {
-            if (OvalW <= 0 && OvalH <= 0) return RectShape(r);
-            var b = Bounds(r);
-            return PictShape.RoundRectangle(b, Math.Min(OvalW / 2f, b.Width / 2f), Math.Min(OvalH / 2f, b.Height / 2f));
-        }
-
-        private PictShape ArcShape((int top, int left, int bottom, int right) r, int startAngle, int arcAngle, bool frame)
-        {
-            float w = Math.Max(0, r.right - r.left), h = Math.Max(0, r.bottom - r.top);
-            float cx = Cx(r.left) + w / 2f, cy = Cy(r.top) + h / 2f, rx = w / 2f, ry = h / 2f;
-            // QuickDraw angles: 0 = up (12 o'clock), clockwise, in degrees.
-            var pts = new List<PictPoint>();
-            int steps = Math.Max(2, Math.Abs(arcAngle));
-            if (!frame) pts.Add(new PictPoint(cx, cy));   // wedge for fills
-            for (int i = 0; i <= steps; i++)
-            {
-                double deg = startAngle + arcAngle * (i / (double)steps);
-                double rad = (90 - deg) * Math.PI / 180.0;     // convert QD (cw from up) to math (ccw from +x)
-                pts.Add(new PictPoint(cx + (float)(rx * Math.Cos(rad)), cy - (float)(ry * Math.Sin(rad))));
-            }
-            return PictShape.Polygon(pts.ToArray());
+            var fallback = options.TextFallback;
+            if (string.IsNullOrEmpty(s) || fallback == null) { Done(); return; }
+            fontNames.TryGetValue(TextFontId, out var name);
+            var mask = fallback.Render(s, new PictTextStyle(TextFontId, TextFace, TextSize, name));
+            if (mask != null && mask.Width > 0 && mask.Height > 0)
+                Painter.FillMask(canvas, textX - mask.OriginX, textY - mask.OriginY, mask.Width, mask.Height, mask.Bits,
+                    clip, TextMode, hilitePending, Colors);
+            Done();
         }
     }
 }

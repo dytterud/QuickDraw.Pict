@@ -6,11 +6,12 @@ using System.Threading;
 namespace QuickDraw.Pict
 {
     /// <summary>
-    /// Decodes a QuickDraw PICT (v1 / v2 / extended v2) to a <see cref="PictBitmap"/>. Bitmap opcodes (BitsRect /
-    /// PackBitsRect / DirectBitsRect and their Rgn variants) are decoded here; vector/shape/text opcodes are resolved to
-    /// geometry and passed to an optional <see cref="IPictRenderer"/>. Every opcode in Inside Macintosh: Imaging With
-    /// QuickDraw, Appendix A, Table A-2 is parsed or skipped by its specified operand size; only malformed data and
-    /// unsupported pixel depths throw.
+    /// Decodes a QuickDraw PICT (v1 / v2 / extended v2) to a <see cref="PictBitmap"/>, drawing it the way QuickDraw's
+    /// DrawPicture does: shapes are rasterized as QuickDraw regions and transferred through the port's patterns and
+    /// transfer modes, bitmaps are decoded from every PixMap layout, and text is rasterized by an optional
+    /// <see cref="IPictTextFallback"/>. Every opcode in Inside Macintosh: Imaging With QuickDraw, Appendix A,
+    /// Table A-2 is parsed or skipped by its specified operand size; only malformed data and unsupported pixel depths
+    /// throw.
     /// </summary>
     public static class PictReader
     {
@@ -23,29 +24,27 @@ namespace QuickDraw.Pict
         private static string ReadMacString(BinaryReader b, int n) => MacRoman.GetString(b.ReadExactly(n));
 
         /// <summary>Decodes the picture read from the current position to the end of <paramref name="stream"/>.</summary>
-        /// <inheritdoc cref="Decode(byte[], Func{PictBitmap, IPictRenderer}?, CancellationToken)"/>
-        public static PictBitmap Decode(Stream stream, Func<PictBitmap, IPictRenderer>? rendererFactory = null,
+        /// <inheritdoc cref="Decode(byte[], PictDecodeOptions?, CancellationToken)"/>
+        public static PictBitmap Decode(Stream stream, PictDecodeOptions? options = null,
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(stream);
             using var ms = new MemoryStream();
             stream.CopyTo(ms);
-            return Decode(ms.ToArray(), rendererFactory, cancellationToken);
+            return Decode(ms.ToArray(), options, cancellationToken);
         }
 
         /// <summary>
         /// Decodes a picture, either bare (as stored in a <c>PICT</c> resource) or as a <c>.pict</c> file with its
-        /// 512-byte application header. The canvas covers <see cref="PictInfo.Bounds"/>.
+        /// 512-byte application header. The canvas covers <see cref="PictInfo.Bounds"/>; pixels the picture never
+        /// draws stay transparent.
         /// </summary>
         /// <param name="data">The picture bytes.</param>
-        /// <param name="rendererFactory">
-        /// Creates the renderer for the vector/text opcodes, given the canvas being decoded into. Null skips those
-        /// opcodes (their operands are still consumed), so only bitmap content is decoded.
-        /// </param>
+        /// <param name="options">Text rasterizer and highlight color; null for defaults.</param>
         /// <param name="cancellationToken">Cancels decoding between opcodes.</param>
         /// <exception cref="NotSupportedException">The picture uses an unsupported pixel format.</exception>
         /// <exception cref="EndOfStreamException">The picture data is truncated.</exception>
-        public static PictBitmap Decode(byte[] data, Func<PictBitmap, IPictRenderer>? rendererFactory = null,
+        public static PictBitmap Decode(byte[] data, PictDecodeOptions? options = null,
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(data);
@@ -55,10 +54,8 @@ namespace QuickDraw.Pict
             var info = PictHeader.Parse(b, data.Length, out bool v1);
             var bounds = info.Bounds;
             var canvas = new PictBitmap(Math.Max(1, bounds.Width), Math.Max(1, bounds.Height)) { Info = info };
-            var renderer = rendererFactory?.Invoke(canvas);
-            try
+            var port = new GrafPort(canvas, bounds, options ?? PictDecodeOptions.Default);
             {
-                var port = new GrafPort(canvas, renderer, bounds.Left, bounds.Top);
                 while (b.BaseStream.Position < b.BaseStream.Length)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -80,7 +77,7 @@ namespace QuickDraw.Pict
                             var pm = PixMap.ReadIndexedHeader(b);
                             var (src, dst) = ReadCopyBitsTail(b, hasRegion: (op & 0x01) != 0);
                             pm.ReadPixData(b, packedOpcode: (op & 0x08) != 0);
-                            Blit(pm, src, dst, canvas, bounds);
+                            Blit(pm, src, port.Map(dst), canvas);
                             break;
                         }
                         case 0x009A:                        // DirectBitsRect
@@ -89,7 +86,7 @@ namespace QuickDraw.Pict
                             var pm = PixMap.ReadDirectHeader(b);
                             var (src, dst) = ReadCopyBitsTail(b, hasRegion: op == 0x009B);
                             pm.ReadPixData(b, packedOpcode: true);
-                            Blit(pm, src, dst, canvas, bounds);
+                            Blit(pm, src, port.Map(dst), canvas);
                             break;
                         }
                         case 0x00A0:                        // ShortComment
@@ -112,10 +109,6 @@ namespace QuickDraw.Pict
                 }
                 return canvas;
             }
-            finally
-            {
-                (renderer as IDisposable)?.Dispose();
-            }
         }
 
         // srcRect, dstRect, mode and (Rgn variants) maskRgn, which sit between a CopyBits PixMap and its PixData.
@@ -129,58 +122,71 @@ namespace QuickDraw.Pict
             return (src, dst);
         }
 
-        // Applies the vector/shape/graphics-state opcodes to the GrafPort. Returns false if the
-        // opcode isn't one we handle (caller then consumes its operands via SkipOperands).
+        // Applies the drawing and graphics-state opcodes to the port. Returns false if the opcode isn't one we
+        // interpret (the caller then consumes its operands via SkipOperands). Shape blocks: rect 0x30, round rect
+        // 0x40, oval 0x50, arc 0x60, poly 0x70, region 0x80; + verb, "same" variants at base + 8.
         private static bool HandleDrawingOpcode(GrafPort port, BinaryReader b, int op)
         {
-            // shape blocks: rect 0x30, round-rect 0x40, oval 0x50, arc 0x60; +verb within the block,
-            // "same" variants at base+8.
             switch (op)
             {
-                case 0x0001: port.Clip = ReadRegionBBox(b, out port.ClipRegion); return true;   // clip region
+                case 0x0001: port.SetClip(Region.Read(b)); return true;                  // ClipRgn
                 case 0x0002: port.BkPat = Pattern.FromMono(b.ReadExactly(8)); return true;    // BkPat
                 case 0x0009: port.PnPat = Pattern.FromMono(b.ReadExactly(8)); return true;    // PnPat
                 case 0x000A: port.FillPat = Pattern.FromMono(b.ReadExactly(8)); return true;  // FillPat
-                case 0x0012: port.BkPat = Pattern.Read(b); return true;            // BkPixPat
-                case 0x0013: port.PnPat = Pattern.Read(b); return true;            // PnPixPat
-                case 0x0014: port.FillPat = Pattern.Read(b); return true;          // FillPixPat
-                case 0x0007: { var p = ReadPoint(b); port.PenWidth = p.h; return true; }  // PnSize
-                case 0x000B: { var p = ReadPoint(b); port.OvalW = p.h; port.OvalH = p.v; return true; }  // OvSize
-                case 0x000C: { var p = ReadPoint(b); port.OriginH = p.h; port.OriginV = p.v; return true; }  // Origin
-                case 0x000E: port.ForeColor = ClassicColor((int)b.ReadU32BE(), true); return true;   // FgColor
-                case 0x000F: port.BackColor = ClassicColor((int)b.ReadU32BE(), false); return true;  // BkColor
-                case 0x001A: port.ForeColor = ReadRgb(b); return true;             // RGBFgCol
-                case 0x001B: port.BackColor = ReadRgb(b); return true;             // RGBBkCol
-                case 0x001F: ReadRgb(b); return true;                             // OpColor (parsed, unused)
-                case 0x0020: { var a = ReadPoint(b); var c = ReadPoint(b); port.Pen = port.P(a.h, a.v); port.Line(port.Pen, port.P(c.h, c.v)); return true; }
-                case 0x0021: { var c = ReadPoint(b); port.Line(port.Pen, port.P(c.h, c.v)); return true; }
-                case 0x0022: { var a = ReadPoint(b); sbyte dh = (sbyte)b.ReadByte(), dv = (sbyte)b.ReadByte(); port.Pen = port.P(a.h, a.v); port.Line(port.Pen, port.P(a.h + dh, a.v + dv)); return true; }
-                case 0x0023: { sbyte dh = (sbyte)b.ReadByte(), dv = (sbyte)b.ReadByte(); var to = new PictPoint(port.Pen.X + dh, port.Pen.Y + dv); port.Line(port.Pen, to); return true; }
-                case 0x0003: port.TextFontId = b.ReadU16BE(); return true;         // TxFont
-                case 0x0004: port.TextFace = b.ReadByte(); return true;            // TxFace (1 byte)
-                case 0x0005: b.ReadU16BE(); return true;                          // TxMode (parsed, unused)
-                case 0x000D: port.TextSize = b.ReadU16BE(); return true;          // TxSize
-                case 0x0028: { var p = ReadPoint(b); int n = b.ReadByte(); var s = ReadMacString(b, n); port.SetTextLoc(p.h, p.v); port.DrawText(s); return true; }     // LongText
-                case 0x0029: { int dh = b.ReadByte(); int n = b.ReadByte(); var s = ReadMacString(b, n); port.OffsetText(dh, 0); port.DrawText(s); return true; }       // DHText
-                case 0x002A: { int dv = b.ReadByte(); int n = b.ReadByte(); var s = ReadMacString(b, n); port.OffsetText(0, dv); port.DrawText(s); return true; }       // DVText
-                case 0x002B: { int dh = b.ReadByte(); int dv = b.ReadByte(); int n = b.ReadByte(); var s = ReadMacString(b, n); port.OffsetText(dh, dv); port.DrawText(s); return true; }  // DHDVText
+                case 0x0012: port.BkPat = Pattern.Read(b); return true;                  // BkPixPat
+                case 0x0013: port.PnPat = Pattern.Read(b); return true;                  // PnPixPat
+                case 0x0014: port.FillPat = Pattern.Read(b); return true;                // FillPixPat
+                case 0x0003: port.TextFontId = b.ReadU16BE(); return true;               // TxFont
+                case 0x0004: port.TextFace = b.ReadByte(); return true;                  // TxFace
+                case 0x0005: port.TextMode = b.ReadU16BE(); return true;                 // TxMode
+                case 0x0007: { var p = ReadPoint(b); port.PenH = p.h; port.PenV = p.v; return true; }     // PnSize
+                case 0x0008: port.PenMode = b.ReadU16BE(); return true;                  // PnMode
+                case 0x000B: { var p = ReadPoint(b); port.OvalW = p.h; port.OvalH = p.v; return true; }   // OvSize
+                case 0x000C: { var p = ReadPoint(b); port.Origin(p.h, p.v); return true; }                // Origin
+                case 0x000D: port.TextSize = b.ReadU16BE(); return true;                 // TxSize
+                case 0x000E: port.ForeColor = ClassicColor((int)b.ReadU32BE(), true); return true;       // FgColor
+                case 0x000F: port.BackColor = ClassicColor((int)b.ReadU32BE(), false); return true;      // BkColor
+                case 0x001A: port.ForeColor = ReadRgb(b); return true;                   // RGBFgCol
+                case 0x001B: port.BackColor = ReadRgb(b); return true;                   // RGBBkCol
+                case 0x001C: port.HiliteMode(); return true;                             // HiliteMode
+                case 0x001D: port.HiliteColor = ReadRgb(b); return true;                 // HiliteColor
+                case 0x001E: port.DefaultHilite(); return true;                          // DefHilite
+                case 0x001F: port.OpColor = (b.ReadU16BE(), b.ReadU16BE(), b.ReadU16BE()); return true;   // OpColor
+                case 0x0020: { var a = ReadPoint(b); var c = ReadPoint(b); port.Line(a.h, a.v, c.h, c.v); return true; }   // Line
+                case 0x0021: { var c = ReadPoint(b); port.LineTo(c.h, c.v); return true; }               // LineFrom
+                case 0x0022: { var a = ReadPoint(b); sbyte dh = (sbyte)b.ReadByte(), dv = (sbyte)b.ReadByte(); port.Line(a.h, a.v, a.h + dh, a.v + dv); return true; }   // ShortLine
+                case 0x0023: { sbyte dh = (sbyte)b.ReadByte(), dv = (sbyte)b.ReadByte(); port.LineBy(dh, dv); return true; }   // ShortLineFrom
+                case 0x0028: { var p = ReadPoint(b); port.LongText(p.h, p.v, ReadText(b)); return true; }            // LongText
+                case 0x0029: { int dh = b.ReadByte(); port.OffsetText(dh, 0, ReadText(b)); return true; }            // DHText
+                case 0x002A: { int dv = b.ReadByte(); port.OffsetText(0, dv, ReadText(b)); return true; }            // DVText
+                case 0x002B: { int dh = b.ReadByte(), dv = b.ReadByte(); port.OffsetText(dh, dv, ReadText(b)); return true; }   // DHDVText
+                case 0x002C:                                                              // fontName
+                {
+                    int length = b.ReadU16BE();
+                    var data = b.ReadExactly(length);
+                    if (length >= 3 && data[2] <= length - 3)
+                        port.FontName((data[0] << 8) | data[1], MacRoman.GetString(data, 3, data[2]));
+                    return true;
+                }
             }
 
-            if (op >= 0x0030 && op <= 0x0034) { port.Rect(ReadRect(b), op - 0x0030); return true; }
-            if (op >= 0x0038 && op <= 0x003C) { port.SameRect(op - 0x0038); return true; }
-            if (op >= 0x0040 && op <= 0x0044) { port.RoundRect(ReadRect(b), op - 0x0040); return true; }
-            if (op >= 0x0048 && op <= 0x004C) { port.SameRoundRect(op - 0x0048); return true; }
-            if (op >= 0x0050 && op <= 0x0054) { port.Oval(ReadRect(b), op - 0x0050); return true; }
-            if (op >= 0x0058 && op <= 0x005C) { port.SameOval(op - 0x0058); return true; }
-            if (op >= 0x0060 && op <= 0x0064) { var r = ReadRect(b); int sa = b.ReadI16BE(), aa = b.ReadI16BE(); port.Arc(r, sa, aa, op - 0x0060); return true; }
-            if (op >= 0x0068 && op <= 0x006C) { int sa = b.ReadI16BE(), aa = b.ReadI16BE(); port.SameArc(sa, aa, op - 0x0068); return true; }
-            if (op >= 0x0070 && op <= 0x0074) { port.LastPoly = ReadPolyPoints(b, port); port.Polygon(port.LastPoly, op - 0x0070); return true; }
-            if (op >= 0x0078 && op <= 0x007C) { if (port.LastPoly != null) port.Polygon(port.LastPoly, op - 0x0078); return true; }
-            if (op >= 0x0080 && op <= 0x0084) { port.LastRegion = ReadRegionBBox(b, out port.LastRegionShape); port.RegionRect(port.LastRegion, op - 0x0080); return true; }
-            if (op >= 0x0088 && op <= 0x008C) { port.RegionRect(port.LastRegion, op - 0x0088); return true; }
+            if (op >= 0x0030 && op <= 0x0034) { port.Rect(b.ReadRectBE(), op - 0x0030); return true; }
+            if (op >= 0x0038 && op <= 0x003C) { port.Rect(null, op - 0x0038); return true; }
+            if (op >= 0x0040 && op <= 0x0044) { port.RoundRect(b.ReadRectBE(), op - 0x0040); return true; }
+            if (op >= 0x0048 && op <= 0x004C) { port.RoundRect(null, op - 0x0048); return true; }
+            if (op >= 0x0050 && op <= 0x0054) { port.Oval(b.ReadRectBE(), op - 0x0050); return true; }
+            if (op >= 0x0058 && op <= 0x005C) { port.Oval(null, op - 0x0058); return true; }
+            if (op >= 0x0060 && op <= 0x0064) { var r = b.ReadRectBE(); int sa = b.ReadI16BE(), aa = b.ReadI16BE(); port.Arc(r, sa, aa, op - 0x0060); return true; }
+            if (op >= 0x0068 && op <= 0x006C) { int sa = b.ReadI16BE(), aa = b.ReadI16BE(); port.Arc(null, sa, aa, op - 0x0068); return true; }
+            if (op >= 0x0070 && op <= 0x0074) { port.Polygon(ReadPolygon(b), op - 0x0070); return true; }
+            if (op >= 0x0078 && op <= 0x007C) { port.Polygon(null, op - 0x0078); return true; }
+            if (op >= 0x0080 && op <= 0x0084) { port.Rgn(Region.Read(b), op - 0x0080); return true; }
+            if (op >= 0x0088 && op <= 0x008C) { port.Rgn(null, op - 0x0088); return true; }
 
             return false;
         }
+
+        private static string ReadText(BinaryReader b) => ReadMacString(b, b.ReadByte());
 
         // QuickDraw Point is (v, h) - vertical first.
         private static (int v, int h) ReadPoint(BinaryReader b)
@@ -214,46 +220,35 @@ namespace QuickDraw.Pict
             }
         }
 
-        private static (int top, int left, int bottom, int right) ReadRect(BinaryReader b)
-        {
-            var r = b.ReadRectBE();
-            return (r.Top, r.Left, r.Bottom, r.Right);
-        }
-
-        // A Region operand: returns its bounding box (what the renderer hand-off uses) and the full region.
-        private static (int top, int left, int bottom, int right) ReadRegionBBox(BinaryReader b, out Region region)
-        {
-            region = Region.Read(b, out var bbox);
-            return (bbox.Top, bbox.Left, bbox.Bottom, bbox.Right);
-        }
-
-        // A Polygon: u16 size + bounding Rect + Point[] ((size-10)/4 points). Returns canvas-space points.
-        private static PictPoint[] ReadPolyPoints(BinaryReader b, GrafPort port)
+        // A Polygon: u16 polySize + bounding Rect + (polySize - 10) / 4 Points, returned as (h, v) picture points.
+        // An empty polygon (no points or an empty bounding box) draws nothing (Executor C_StdPoly).
+        private static (int h, int v)[] ReadPolygon(BinaryReader b)
         {
             int size = b.ReadU16BE();
-            b.ReadRectBE();                      // bbox (unused)
+            var bbox = b.ReadRectBE();
             int count = Math.Max(0, (size - 10) / 4);
-            var pts = new PictPoint[count];
+            var pts = new (int h, int v)[count];
             for (int i = 0; i < count; i++)
             {
                 var p = ReadPoint(b);
-                pts[i] = port.P(p.h, p.v);
+                pts[i] = (p.h, p.v);
             }
-            return pts;
+            if (size > 10 && (size - 10) % 4 != 0) b.Skip((size - 10) % 4);
+            return bbox.IsEmpty ? Array.Empty<(int h, int v)>() : pts;
         }
 
-        // Copy the srcRect part of a decoded PixMap to its dstRect on the canvas (canvas = picture bounds).
-        private static void Blit(PixMap pm, PictRect src, PictRect dst, PictBitmap canvas, PictRect bounds)
+        // Copy the srcRect part of a decoded PixMap to its dstRect (canvas space) on the canvas.
+        private static void Blit(PixMap pm, PictRect src, PictRect dst, PictBitmap canvas)
         {
             for (int y = 0; y < src.Height; y++)
             {
                 int sy = (src.Top - pm.Bounds.Top) + y;
-                int dy = (dst.Top - bounds.Top) + y;
+                int dy = dst.Top + y;
                 if (sy < 0 || sy >= pm.Height || dy < 0 || dy >= canvas.Height) continue;
                 for (int x = 0; x < src.Width; x++)
                 {
                     int sx = (src.Left - pm.Bounds.Left) + x;
-                    int dx = (dst.Left - bounds.Left) + x;
+                    int dx = dst.Left + x;
                     if (sx < 0 || sx >= pm.Width || dx < 0 || dx >= canvas.Width) continue;
                     canvas[dx, dy] = pm.GetPixel(sx, sy);
                 }

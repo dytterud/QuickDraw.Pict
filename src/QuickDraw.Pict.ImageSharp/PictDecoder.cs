@@ -10,7 +10,8 @@ namespace QuickDraw.Pict.ImageSharp
 {
     /// <summary>
     /// Decodes QuickDraw PICT (v1/v2) pictures, bare or with a <c>.pict</c> file header. Bitmap opcodes are decoded
-    /// exactly; vector and text opcodes are rasterized with ImageSharp.Drawing (aliased, like QuickDraw).
+    /// exactly and shapes are drawn by QuickDraw.Pict's QuickDraw engine; text is rasterized (aliased, like QuickDraw)
+    /// with SixLabors.Fonts, using <see cref="PictDecoderOptions.FontResolver"/> or a system font.
     /// </summary>
     public sealed class PictDecoder : SpecializedImageDecoder<PictDecoderOptions>
     {
@@ -37,8 +38,8 @@ namespace QuickDraw.Pict.ImageSharp
         {
             DecoderOptions general = options.GeneralOptions;
             Configuration configuration = general.Configuration;
-            PictBitmap bitmap = Guard(() => PictReader.Decode(stream,
-                canvas => new ImageSharpPictRenderer(configuration, canvas, options.FontResolver), cancellationToken));
+            var pictOptions = new PictDecodeOptions { TextFallback = new ImageSharpTextFallback(configuration, options.FontResolver) };
+            PictBitmap bitmap = Guard(() => PictReader.Decode(stream, pictOptions, cancellationToken));
 
             Image<Rgba32> rgba = Image.LoadPixelData<Rgba32>(configuration, bitmap.Pixels, bitmap.Width, bitmap.Height);
             Image<TPixel> image;
