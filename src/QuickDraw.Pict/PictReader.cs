@@ -119,12 +119,13 @@ namespace QuickDraw.Pict
         }
 
         // srcRect, dstRect, mode and (Rgn variants) maskRgn, which sit between a CopyBits PixMap and its PixData.
+        // The mask is parsed now and applied with the transfer mode once CopyBits honours them.
         private static (PictRect src, PictRect dst) ReadCopyBitsTail(BinaryReader b, bool hasRegion)
         {
             var src = b.ReadRectBE();
             var dst = b.ReadRectBE();
             b.ReadU16BE();                                  // transfer mode
-            if (hasRegion) SkipRegion(b);                   // mask region
+            if (hasRegion) Region.Read(b);                  // mask region
             return (src, dst);
         }
 
@@ -136,7 +137,7 @@ namespace QuickDraw.Pict
             // "same" variants at base+8.
             switch (op)
             {
-                case 0x0001: port.Clip = ReadRegionBBox(b); return true;           // clip region
+                case 0x0001: port.Clip = ReadRegionBBox(b, out port.ClipRegion); return true;   // clip region
                 case 0x0002: port.BkPat = Pattern.FromMono(b.ReadExactly(8)); return true;    // BkPat
                 case 0x0009: port.PnPat = Pattern.FromMono(b.ReadExactly(8)); return true;    // PnPat
                 case 0x000A: port.FillPat = Pattern.FromMono(b.ReadExactly(8)); return true;  // FillPat
@@ -175,7 +176,7 @@ namespace QuickDraw.Pict
             if (op >= 0x0068 && op <= 0x006C) { int sa = b.ReadI16BE(), aa = b.ReadI16BE(); port.SameArc(sa, aa, op - 0x0068); return true; }
             if (op >= 0x0070 && op <= 0x0074) { port.LastPoly = ReadPolyPoints(b, port); port.Polygon(port.LastPoly, op - 0x0070); return true; }
             if (op >= 0x0078 && op <= 0x007C) { if (port.LastPoly != null) port.Polygon(port.LastPoly, op - 0x0078); return true; }
-            if (op >= 0x0080 && op <= 0x0084) { port.LastRegion = ReadRegionBBox(b); port.RegionRect(port.LastRegion, op - 0x0080); return true; }
+            if (op >= 0x0080 && op <= 0x0084) { port.LastRegion = ReadRegionBBox(b, out port.LastRegionShape); port.RegionRect(port.LastRegion, op - 0x0080); return true; }
             if (op >= 0x0088 && op <= 0x008C) { port.RegionRect(port.LastRegion, op - 0x0088); return true; }
 
             return false;
@@ -219,14 +220,11 @@ namespace QuickDraw.Pict
             return (r.Top, r.Left, r.Bottom, r.Right);
         }
 
-        // A Region/Polygon header: u16 size (incl. itself) + bounding Rect; skip any run data.
-        private static (int top, int left, int bottom, int right) ReadRegionBBox(BinaryReader b)
+        // A Region operand: returns its bounding box (what the renderer hand-off uses) and the full region.
+        private static (int top, int left, int bottom, int right) ReadRegionBBox(BinaryReader b, out Region region)
         {
-            int size = b.ReadU16BE();
-            var bbox = ReadRect(b);
-            int consumed = 2 + 8;
-            if (size > consumed) b.Skip(size - consumed);
-            return bbox;
+            region = Region.Read(b, out var bbox);
+            return (bbox.Top, bbox.Left, bbox.Bottom, bbox.Right);
         }
 
         // A Polygon: u16 size + bounding Rect + Point[] ((size-10)/4 points). Returns canvas-space points.

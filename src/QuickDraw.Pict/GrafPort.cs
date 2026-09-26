@@ -29,6 +29,8 @@ namespace QuickDraw.Pict
         public (int top, int left, int bottom, int right) LastRect;  // for the "same shape" opcodes
         public PictPoint[]? LastPoly;            // for the "same poly" opcodes
         public (int top, int left, int bottom, int right) LastRegion;  // for the "same region" opcodes
+        public Region? ClipRegion;                // full clip region (0x0001)
+        public Region LastRegionShape = Region.Empty;  // full region of the last *Rgn shape
 
         public int TextFontId, TextFace, TextSize = 12;   // text state
         public int TextH, TextV;                          // current text pen (QuickDraw coords)

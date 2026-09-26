@@ -10,4 +10,8 @@
     <PackageTags>pict;quickdraw;macintosh;image;decoder;encoder</PackageTags>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="QuickDraw.Pict.Tests" />
+  </ItemGroup>
+
 </Project>
