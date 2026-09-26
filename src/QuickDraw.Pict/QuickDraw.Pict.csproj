@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>QuickDraw.Pict</PackageId>
+    <Description>Dependency-free reader and writer for Apple QuickDraw PICT (v1/v2) images. Decodes to a plain RGBA buffer; vector and text opcodes are handed to a pluggable renderer.</Description>
+    <PackageTags>pict;quickdraw;macintosh;image;decoder;encoder</PackageTags>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>QuickDraw.Pict.ImageSharp</PackageId>
+    <Description>SixLabors.ImageSharp format plugin for Apple QuickDraw PICT (v1/v2): detection, decoding (including vector and text opcodes via ImageSharp.Drawing) and encoding. Built on QuickDraw.Pict.</Description>
+    <PackageTags>imagesharp;pict;quickdraw;macintosh;image;decoder;encoder</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
+    <PackageReference Include="SixLabors.ImageSharp.Drawing" Version="2.1.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\QuickDraw.Pict\QuickDraw.Pict.csproj" />
+  </ItemGroup>
+
+</Project>
