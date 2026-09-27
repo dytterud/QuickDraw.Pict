@@ -6,7 +6,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>QuickDraw.Pict.ImageSharp</PackageId>
-    <Description>SixLabors.ImageSharp format plugin for Apple QuickDraw PICT pictures: detection, decoding with QuickDraw.Pict's Macintosh-exact engine (plus JPEG/PNG/GIF/TIFF/BMP QuickTime images through ImageSharp, and outline-font text via SixLabors.Fonts when no bitmap font is supplied) and encoding (indexed, 16-bit, 32-bit with alpha, resolution, ICC).</Description>
+    <Description>SixLabors.ImageSharp format plugin for Apple QuickDraw PICT pictures, QuickTime image files (QTIF) and MacPaint documents: detection, Macintosh-exact decoding with QuickDraw.Pict (JPEG/PNG/GIF/TIFF/WebP/BMP QuickTime images through ImageSharp, outline-font text through SixLabors.Fonts when no bitmap font is supplied) and PICT encoding (indexed, 16-bit, 32-bit with alpha, resolution, ICC).</Description>
     <PackageTags>imagesharp;pict;quickdraw;macintosh;image;decoder;encoder</PackageTags>
   </PropertyGroup>
 

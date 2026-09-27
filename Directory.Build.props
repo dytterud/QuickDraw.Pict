@@ -9,6 +9,16 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <Deterministic>true</Deterministic>
     <PackageReleaseNotes>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)CHANGELOG.md'))</PackageReleaseNotes>
+    <PackageProjectUrl>https://github.com/dytterud/QuickDraw.Pict</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/dytterud/QuickDraw.Pict.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- Source Link (built into the .NET SDK for GitHub): symbols point at the commit's sources. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(IsPackable)' != 'false' And '$(MSBuildProjectName)' != 'QuickDraw.Pict.Tests'">
