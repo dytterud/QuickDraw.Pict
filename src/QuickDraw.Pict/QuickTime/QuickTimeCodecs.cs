@@ -24,7 +24,7 @@ namespace QuickDraw.Pict
                     "yuv2" => Yuv2(d, data),
                     "YVU9" => Yvu9(d, data),
                     "tga " => TargaCodec.Decode(data),
-                    "PNTG" => MacPaint(data),
+                    "PNTG" => MacPaintFile.DecodeRows(data),
                     _ => null,
                 };
             }
@@ -72,26 +72,6 @@ namespace QuickDraw.Pict
             return value < palette.Length ? palette[value] : new PictColor(0, 0, 0);
         }
 
-        // Standard PackBits (flag n >= 0: copy n + 1 bytes; n < 0: repeat the next byte 1 - n times; -128: no-op).
-        internal static int UnpackBits(ReadOnlySpan<byte> src, Span<byte> dst)
-        {
-            int ip = 0, op = 0;
-            while (ip < src.Length && op < dst.Length)
-            {
-                sbyte flag = (sbyte)src[ip++];
-                if (flag == -128) continue;
-                if (flag < 0)
-                {
-                    if (ip >= src.Length) break;
-                    byte b = src[ip++];
-                    for (int i = 0; i < 1 - flag && op < dst.Length; i++) dst[op++] = b;
-                }
-                else
-                    for (int i = 0; i <= flag && ip < src.Length && op < dst.Length; i++) dst[op++] = src[ip++];
-            }
-            return ip;
-        }
-
         // ---- simple codecs ----
 
         // 'raw ': rows of the description's depth; the row length is taken from the data (rows are usually padded
@@ -127,7 +107,7 @@ namespace QuickDraw.Pict
             {
                 int count = (data[2 * l] << 8) | data[2 * l + 1];
                 if (p + count > data.Length) return null;
-                UnpackBits(data.AsSpan(p, count), planes.AsSpan(l * d.Width, d.Width));
+                PackBits.Unpack(data.AsSpan(p, count), planes.AsSpan(l * d.Width, d.Width));
                 p += count;
             }
             var palette = Palette(d);
@@ -177,24 +157,5 @@ namespace QuickDraw.Pict
             return img;
         }
 
-        // 'PNTG': MacPaint, 576 x 720 1-bit, rows PackBits-compressed back to back (1 = black).
-        private static PictBitmap? MacPaint(byte[] data) => MacPaintBits(data);
-
-        // MacPaint rows (after any file header): rows missing from the data stay white.
-        internal static PictBitmap? MacPaintBits(ReadOnlySpan<byte> data)
-        {
-            const int width = 576, height = 720, rowBytes = width / 8;
-            var bits = new byte[rowBytes * height];
-            int consumed = UnpackBits(data, bits);
-            if (consumed == 0) return null;
-            var img = new PictBitmap(width, height);
-            for (int y = 0; y < height; y++)
-                for (int x = 0; x < width; x++)
-                {
-                    bool black = ((bits[y * rowBytes + (x >> 3)] >> (7 - (x & 7))) & 1) != 0;
-                    Set(img, x, y, black ? new PictColor(0, 0, 0) : new PictColor(255, 255, 255));
-                }
-            return img;
-        }
     }
 }

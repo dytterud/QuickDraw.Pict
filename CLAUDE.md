@@ -23,16 +23,29 @@ Internals are visible to the test project.
 
 ## Architecture
 
+**Layers.** The core is one package whose code lives in layer folders under `src/QuickDraw.Pict/`, in the order they
+will become separate ClassicMac packages. A layer uses only the layers below it; `LayeringTests` checks this, with one
+listed exception (`PictBitmap.Info`, public API until the merge). Public types keep the `QuickDraw.Pict` namespace.
+
+| Folder | Contains | May use |
+| --- | --- | --- |
+| `Graphics/` | `PictBitmap`, `PictColor`/`PictRect`, `PixMap` records, standard colour tables, PackBits | nothing |
+| `MacPaint/` | `MacPaintFile` (also QuickTime's `PNTG` codec) | Graphics |
+| `QuickTime/` | Image descriptions, the codecs, `IPictImageCodec`, QTIF files | Graphics, MacPaint |
+| `QuickDraw/` | The renderer: `Engine/`, `Regions/`, `Text/`, `Pattern`, `PictFontLibrary` | Graphics |
+| `Pict/` | The PICT format: `PictReader`, `GrafPort`, `PictWriter`, `PictHeader`/`PictInfo`, options, the `$8200` opcode | all of the above |
+| `Resources/` | `QuickDrawResources` (icons, cursors, patterns) | Graphics, QuickDraw |
+
 **Decoding pipeline**
 - `PictReader` parses the opcode stream and drives a `GrafPort`. The port holds the play state: pen, patterns,
   fore/back/op/hilite colours, clip, text state, and picture-to-canvas mapping.
-- The port draws onto a `PictBitmap` (RGBA canvas) through the engine in `Engine/`:
+- The port draws onto a `PictBitmap` (RGBA canvas) through the renderer in `QuickDraw/Engine/`:
   - `Painter`: region + pattern fills.
   - `Bits`: CopyBits/StretchBits, including the row and column DDAs and colorizing.
   - `TransferModes`: Boolean, arithmetic and hilite modes.
   - `PictureMapping`: MapPt/MapRect.
-- Shapes become `Regions/Region` via `RegionShapes`, which scan-converts the way QuickDraw does.
-- Fixed-point maths lives in `Regions/FixedMath`.
+- Shapes become `QuickDraw/Regions/Region` via `RegionShapes`, which scan-converts the way QuickDraw does.
+- Fixed-point maths lives in `QuickDraw/Regions/FixedMath`.
 
 **Two QuickDraws.** `PictDecodeOptions.QuickDraw` selects `MacOS9` (the default) or `MacRom` (the 68k ROM $077D).
 The difference flows through `PortColors.MacOS9` / `FontSelection.MacOS9`. The difference is scattered through every
@@ -40,13 +53,13 @@ layer: DDAs, rounding, colorizing, text placement and the Font Manager. Any beha
 correct.
 
 **Screen depth.** `PictDecodeOptions.ScreenDepth` (1/2/4/8/16) routes every pixel write through
-`Engine/ScreenDevice.cs`:
+`QuickDraw/Engine/ScreenDevice.cs`:
 - `ScreenDevice`: default clut, inverse table, Color2Index.
 - `DeviceModes`: index-level transfer modes, PatDither, ditherCopy.
 - The device rides on `PortColors.Device`. Painter and Bits branch to it. The only canvas write sites are
   `Painter.FillRegion`/`FillMask` and `Bits.CopyBits`.
 
-**Text** (`Text/`)
+**Text** (`QuickDraw/Text/`)
 - `PictFontLibrary` holds caller-supplied `FOND`/`NFNT`/`FONT`/`fctb` resources, parsed from resource forks by
   `ResourceFork`.
 - `FontManager.Swap` reproduces the Font Manager's font choice and outputs a `FontSelection`: widths, style extras
@@ -56,10 +69,11 @@ correct.
 - Text without a usable bitmap strike, including TrueType-only families, goes to `IPictTextFallback`.
 
 **Other formats**
-- `QuickTime/`: the 0x8200/0x8201 opcodes and the built-in codecs. Other codecs go through `IPictImageCodec`.
-- `QuickDrawResources`: icons, cursors and patterns from resource bytes.
-- `QuickTimeImageFile` and `MacPaintFile`: standalone file formats.
-- `PictWriter`: the encoder.
+- `QuickTime/`: the built-in codecs and QTIF files; `Pict/QuickTimeImage` parses the 0x8200/0x8201 opcodes. Other
+  codecs go through `IPictImageCodec`.
+- `Resources/QuickDrawResources`: icons, cursors and patterns from resource bytes.
+- `MacPaint/MacPaintFile`: MacPaint documents.
+- `Pict/PictWriter`: the encoder.
 
 ## Ground truth and the spec
 

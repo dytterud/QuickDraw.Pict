@@ -50,8 +50,29 @@ namespace QuickDraw.Pict
                 span = span.Slice(MacBinaryHeaderSize, forkLength);
             }
             if (span.Length <= HeaderSize) throw new NotSupportedException("The data is too short to be a MacPaint document.");
-            var image = QuickTimeCodecs.MacPaintBits(span.Slice(HeaderSize));
+            var image = DecodeRows(span.Slice(HeaderSize));
             return image ?? throw new NotSupportedException("The MacPaint document has no image data.");
+        }
+
+        // The image rows (after any header), PackBits-compressed back to back; 1 = black; rows missing from the data stay
+        // white. Also QuickTime's 'PNTG' codec.
+        internal static PictBitmap? DecodeRows(ReadOnlySpan<byte> data)
+        {
+            const int rowBytes = Width / 8;
+            var bits = new byte[rowBytes * Height];
+            int consumed = PackBits.Unpack(data, bits);
+            if (consumed == 0) return null;
+            var img = new PictBitmap(Width, Height);
+            var px = img.Pixels;
+            for (int y = 0; y < Height; y++)
+                for (int x = 0; x < Width; x++)
+                {
+                    byte v = ((bits[y * rowBytes + (x >> 3)] >> (7 - (x & 7))) & 1) != 0 ? (byte)0 : (byte)255;
+                    int i = (y * Width + x) * 4;
+                    px[i] = px[i + 1] = px[i + 2] = v;
+                    px[i + 3] = 255;
+                }
+            return img;
         }
 
         // MacBinary (I/II/III): byte 0 zero, a 1-63 character name at 1, file type PNTG at 65, zero at 74 and 82.

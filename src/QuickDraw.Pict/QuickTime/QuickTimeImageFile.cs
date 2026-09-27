@@ -37,7 +37,7 @@ namespace QuickDraw.Pict
         {
             ArgumentNullException.ThrowIfNull(data);
             foreach (var (type, offset, _) in Atoms(data))
-                if (type == "idsc" && QuickTimeImage.ReadDescription(data, offset, out _) is { } description)
+                if (type == "idsc" && ImageDescriptionReader.Read(data, offset, out _) is { } description)
                     return description;
             throw new NotSupportedException("Not a QuickTime image file: it has no image description ('idsc').");
         }
