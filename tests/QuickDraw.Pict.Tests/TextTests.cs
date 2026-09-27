@@ -371,6 +371,44 @@ public class TextTests
         Assert.Equal((256, 192), s.Numer);
     }
 
+    // Expands a 1-bit test font to 8 bits (ink = inkIndex, background 0), marking it a color font with an fctb.
+    private static byte[] Deep8(byte[] font, byte inkIndex)
+    {
+        int rowWords = (font[24] << 8) | font[25], height = (font[14] << 8) | font[15];
+        int rb1 = rowWords * 2, rb8 = rb1 * 8;
+        var img = new byte[rb8 * height];
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < rb1 * 8; x++)
+                if ((font[26 + y * rb1 + (x >> 3)] & (0x80 >> (x & 7))) != 0) img[y * rb8 + x] = inkIndex;
+        var tail = font.AsSpan(26 + rb1 * height).ToArray();
+        int owTLoc = ((font[16] << 8) | font[17]) + (img.Length - rb1 * height) / 2;
+        var header = font.AsSpan(0, 26).ToArray();
+        int fontType = ((header[0] << 8) | header[1]) & ~0x1C | (3 << 2) | 0x280;
+        header[0] = (byte)(fontType >> 8); header[1] = (byte)fontType;
+        header[10] = (byte)(owTLoc >> 24); header[11] = (byte)(owTLoc >> 16);             // nDescent = high word
+        header[16] = (byte)(owTLoc >> 8); header[17] = (byte)owTLoc;
+        return header.Concat(img).Concat(tail).ToArray();
+    }
+
+    [Fact]
+    public void ColorFont_DrawsEachGlyphBoxOpaqueThroughItsColorTable()
+    {
+        // An 8-bit color variant (FOND style $0300) with an fctb: 0 = white box, 7 = green ink; drawn srcCopy whatever
+        // the text mode (srcOr here), the whole glyph box opaque.
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, (9, 0x0300, 500)));
+        lib.AddNfnt(500, Deep8(Font9, 7));
+        var fctb = new PictBuilder().U16(0).U16(0).U16(0).U16(7);
+        for (int i = 0; i < 8; i++) fctb.U16(i).Rgb(i == 7 ? 0 : 0xFFFF, 0xFFFF, i == 7 ? 0 : 0xFFFF);
+        lib.AddFontColorTable(500, fctb.ToArray());
+        var b = PictBuilder.V2(0, 0, 7, 10).U16(0x0003).U16(Family).U16(0x000D).U16(9).U16(0x0005).U16(1)
+            .U16(0x0028).Point(4, 2).Text("A").Align().U16(0x00FF);
+        var bmp = PictReader.Decode(b.ToArray(), new PictDecodeOptions { Fonts = lib });
+        Assert.Equal(new PictColor(0, 255, 0), bmp[2, 1]);                // ink
+        Assert.Equal(new PictColor(255, 255, 255), bmp[2, 4]);            // the box's background, drawn opaque
+        Assert.Equal(0, bmp.Pixels[(1 * 10 + 5) * 4 + 3]);               // outside the box: untouched
+    }
+
     [Fact]
     public void FixRound_RoundsHalvesAwayFromZeroAndSaturates()
     {

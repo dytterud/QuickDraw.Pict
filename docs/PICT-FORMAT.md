@@ -417,8 +417,9 @@ decoder may keep it for srcCopy transfers (§11.6).
 
 - **Pen:** location (0, 0), size 1×1, mode patCopy.
 - **Patterns:** pen and fill black, background white.
-- **Colours:** foreground black, background white, OpColor black. Highlight colour is the system default; a decoder
-  should let the caller choose it.
+- **Colours:** foreground black, background white, OpColor black. Highlight colour is the system default: `$9999/$CCCC/$CCCC`
+  in the ROM, lavender `$CCCC/$CCCC/$FFFF` on Mac OS 9 (Appearance default). DefHilite restores it. A decoder should
+  let the caller choose it.
 - **Text:** font 0, face 0, mode srcOr, size 0, space extra 0, character extra 0, pen fraction ½ (`$8000`).
 - **Text ratio:** numer = toRect size, denom = fromRect size (§12.7).
 - **Clip:** none.
@@ -1639,7 +1640,6 @@ A picture that every PICT reader, and the ROM, decodes identically:
 ## 16. Not covered
 
 - **TrueType (`sfnt`) text.** It goes to the outline fallback.
-- **Colour bitmap fonts** (NFNTs with their own colour tables).
 - **QuickTime mattes, rotation and skew.** Images are placed in their bounding box, and the matte is ignored.
 - **Mac OS 9 details not yet pinned down** (see the end of §17).
 
@@ -1780,18 +1780,30 @@ follows the rules below. It still uses the ROM's MapPt, MapRect, ScalePt, FixMul
 - **A lone carriage return** (a text of exactly one byte 13) draws nothing and leaves the pen. A carriage return
   inside longer text draws its glyph with advance 0.
 - **Stretched text advances the pen** by `FixMul(width, numer/denom)`, rounded half up.
+- **Colour bitmap fonts** (an NFNT with fontType bits 2–4 = log₂ depth > 0, strike rows `rowWords × 2 × depth` bytes;
+  in a FOND the association's style high byte is the depth code):
+  - At a chosen size and style, the last association of the same size and low style byte with depth code 1–4 is
+    used instead of the plain strike.
+  - Colours: the `fctb` with the NFNT's id (a ColorTable, §4.6), else the standard `clut` of the strike's depth.
+  - Each glyph is drawn on its own with **opaque srcCopy**, whatever the text mode and style: its whole box
+    (image width × font rect height, top at `pen.v − ascent`) is copied from the strike through the colours, clipped.
+  - Glyph x = `HiWord(penFixed + scaled) + kernMax + offset`, where penFixed = `(pen.h << 16) | fraction`, `scaled`
+    is the unscaled Fixed advance so far (widths plus chExtra, as in §12) times `numer.h / denom.h` when stretched,
+    and the glyph offset is **not** scaled.
+  - Stretched width = `(2 × bits × numer.h + denom.h) / (2 × denom.h)` (half up); the rows scale with MapRect about
+    the pen. Glyphs of width 0 draw nothing.
+  - The pen advances as for 1-bit text.
 
 ### 17.5 Not yet pinned down
 
 These Mac OS 9 differences are known but not yet exactly specified or verified. QuickDraw.Pict draws them the ROM way
 in both modes:
 
-- **Colour bitmap fonts:** Mac OS 9 draws 2/4/8-bit NFNTs glyph by glyph, in opaque srcCopy, through their `fctb`.
 - **Quirks found by reading code but not reproduced:**
   - italic rows that need shifts of 32 bits or more (from about 64 rows at the default slant) are corrupted;
   - a clipped reduction's right-edge span is one column short;
   - a destination rect past the pixel map's bounds picks its scaling routine from truncated widths.
-- **Stretched text:** how Mac OS 9 places glyphs when it stretches text (each glyph offset times the scale).
+- **Stretched 1-bit text:** how Mac OS 9 places 1-bit glyphs when it stretches text.
 
 Differences that only concern other destinations (dithering, 1-to-8-bit copies, indexed destinations, black-and-white
 ports) or the destination's alpha byte do not apply to a 32-bit RGBA canvas.
@@ -1880,8 +1892,10 @@ the same structures. All are big-endian.
   | 10 | 10 | reserved |
   | 20 | 8 | the 1-bit pattern |
 
-- Types 1 and 3 decode the PixMap. Its pmTable is the offset of the ColorTable; when pmTable is 0, the table
-  follows the pixels.
-- Types 0 and 2 use the 1-bit pattern.
+- Types 1 and 3 decode the PixMap. Its pmTable is the offset of the ColorTable, which must lie at or after the end
+  of the pixels; pmTable 0 (or a table before the pixel end) makes GetPixPat fail, so the resource does not load.
+- Type 0: Mac OS 9 fills the pattern from the **first 8 bytes of the pixel data** (at the pixels offset), not from
+  the 1-bit pattern at offset 20.
+- Other types (2) use the 1-bit pattern at offset 20.
 - **`ppt#`:** a u16 count, then that many u32 offsets to `ppat` data.
 

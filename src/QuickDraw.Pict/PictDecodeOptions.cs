@@ -25,10 +25,12 @@ namespace QuickDraw.Pict
         public IPictImageCodec? ImageCodec { get; init; }
 
         /// <summary>
-        /// The highlight color used by hilite-mode drawing (opcode 0x001C) until the picture sets its own
-        /// (0x001D). Defaults to Color QuickDraw's standard light cyan (0x9999, 0xCCCC, 0xCCCC).
+        /// The system highlight color, used by hilite-mode drawing (opcode 0x001C) until the picture sets its own
+        /// (0x001D); DrawPicture takes it from the system setting. Null (the default) uses the default of the
+        /// chosen <see cref="QuickDraw"/>: Mac OS 9's lavender (0xCCCC, 0xCCCC, 0xFFFF), or the light cyan
+        /// (0x9999, 0xCCCC, 0xCCCC) for the ROM.
         /// </summary>
-        public PictColor HiliteColor { get; init; } = new PictColor(0x99, 0xCC, 0xCC);
+        public PictColor? HiliteColor { get; init; }
 
         /// <summary>The size to draw the picture at. Defaults to <see cref="PictResolution.Native"/>.</summary>
         public PictResolution Resolution { get; init; } = PictResolution.Native;

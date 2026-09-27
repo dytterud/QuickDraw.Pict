@@ -58,8 +58,8 @@ namespace QuickDraw.Pict
             this.options = options;
             fromRect = pictureFrame;
             toRect = new PictRect(0, 0, canvas.Height, canvas.Width);
-            HiliteColor = options.HiliteColor;
             macOS9 = options.QuickDraw == PictQuickDraw.MacOS9;
+            HiliteColor = SystemHilite;
             textNumer = (toRect.Width, toRect.Height);
             textDenom = (fromRect.Width, fromRect.Height);
         }
@@ -122,7 +122,10 @@ namespace QuickDraw.Pict
             return ((int)n, (int)d);
         }
 
-        public void DefaultHilite() => HiliteColor = options.HiliteColor;
+        public void DefaultHilite() => HiliteColor = SystemHilite;
+
+        private PictColor SystemHilite =>
+            options.HiliteColor ?? (macOS9 ? new PictColor(0xCC, 0xCC, 0xFF) : new PictColor(0x99, 0xCC, 0xCC));
 
         // TxFont goes through the font map the fontName opcodes build.
         public void TextFont(int fontId)

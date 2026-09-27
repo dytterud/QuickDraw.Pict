@@ -20,7 +20,9 @@ namespace QuickDraw.Pict
         public byte[] Data = Array.Empty<byte>();
         public int OffsetWidthTable;                     // byte offset of the offset/width table in Data
 
-        public int RowBytes => RowWords * 2;
+        // A color font's strike (fontType bits 2-4: log2 depth) holds rowWords x 2 x depth bytes per row.
+        public int Depth => 1 << ((FontType >> 2) & 7);
+        public int RowBytes => RowWords * 2 * Depth;
         public bool HasHeightTable => (FontType & 1) != 0;
 
         // The character's slot in the tables, or the missing symbol's (lastChar - firstChar + 1).
@@ -86,6 +88,13 @@ namespace QuickDraw.Pict
             long o = OffsetWidthTable + 2L * index;
             return o >= 0 && o + 2 <= Data.Length ? BinaryPrimitives.ReadInt16BigEndian(Data.AsSpan((int)o)) : 0;
         }
+
+        // The strike as a pixel map of its depth (for color fonts), with the given palette.
+        public PixMap StrikeMap(PictColor[] palette) => new PixMap
+        {
+            Bounds = new PictRect(0, 0, RectHeight, RowWords * 16), RowBytes = RowBytes, PixelSize = Depth,
+            IsPixMap = true, Palette = palette, Data = Strike,
+        };
 
         public bool StrikeBit(int row, int column)
         {

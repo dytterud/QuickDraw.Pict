@@ -17,6 +17,7 @@ namespace QuickDraw.Pict
         public (int h, int v) InNumer, InDenom;            // the text scale it was asked for
         public int Ascent, Descent;                        // FMOutput's metrics (bytes; scaled with FScaleDisable)
         public bool MacOS9;                                // drawn by Mac OS 9's text code
+        public PictColor[]? Palette;                       // a color font's colors (fctb or the standard table)
     }
 
     // The Macintosh ROM's Font Manager (FMSwapFont, System 7 bitmap path; screen device, 80 dpi).
@@ -55,7 +56,10 @@ namespace QuickDraw.Pict
         private static readonly int[] WidthTableScore = { 1, 3, 5, 4, 4, 2, 2, 0 };   // ROM $FFCBF6EA
         private const int Geneva = 3;
 
-        private readonly record struct Found(BitmapFont Font, int ActualSize, int Remaining, FontFamilyRecord? Fond);
+        private readonly record struct Found(BitmapFont Font, int ActualSize, int Remaining, FontFamilyRecord? Fond)
+        {
+            public int FontId { get; init; }
+        }
 
         public static FontSelection? Swap(PictFontLibrary library, int family, int size, int face,
             (int h, int v) numer, (int h, int v) denom, int spaceExtra, bool fractEnable, bool fScaleDisable, bool macOS9)
@@ -80,7 +84,13 @@ namespace QuickDraw.Pict
                 if (fond != null && fond.Associations.Length > 0)
                 {
                     var found = FromFamily(library, fond, searchSize, face, fScaleDisable, macOS9, out bool trueType);
-                    if (found != null) return Build(found.Value, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable, macOS9, fold);
+                    if (found != null)
+                    {
+                        var selection = Build(found.Value, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable, macOS9, fold);
+                        if (found.Value.Font.Depth > 1)
+                            selection.Palette = library.ColorFontPalette(found.Value.FontId, found.Value.Font.Depth);
+                        return selection;
+                    }
                     if (trueType) return null;
                 }
                 if (candidate < 0x200 && FromOldFonts(library, candidate, searchSize, face, fScaleDisable) is { } old)
@@ -109,9 +119,9 @@ namespace QuickDraw.Pict
         {
             trueType = false;
             int match = macOS9 ? face & 0x9B : face;
-            var entries = new List<FontFamilyRecord.Association>();
-            foreach (var a in fond.Associations)
-                if ((a.Style & 0xFF00) == 0) entries.Add(a);
+            // Depth variants (style high byte = log2 depth) take part too: at a chosen size and style the last
+            // variant of depth 2-16 bits is used on a 32-bit screen ($FFCBE6EA), else the plain one.
+            var entries = new List<FontFamilyRecord.Association>(fond.Associations);
             bool Has(int s) => s > 0 && entries.Exists(a => a.Size == s);
 
             // The style variant of a size, loaded (null when its resource is missing).
@@ -127,8 +137,12 @@ namespace QuickDraw.Pict
                     int score = (style & ~match) != 0 ? -1 : Score(style, VariantScore);
                     if (score > bestScore) (bestScore, chosen) = (score, a);
                 }
-                if (chosen is not { } entry || library.Strike(entry.FontId) is not { } strike) return null;
-                return new Found(strike, entry.Size, face & ~(entry.Style & 0xFF), fond);
+                if (chosen is not { } entry) return null;
+                foreach (var a in entries)
+                    if (a.Size == size && (a.Style & 0xFF) == (entry.Style & 0xFF) && (a.Style >> 8) is >= 1 and <= 4)
+                        entry = a;
+                if (library.Strike(entry.FontId) is not { } strike) return null;
+                return new Found(strike, entry.Size, face & ~(entry.Style & 0xFF), fond) { FontId = entry.FontId };
             }
 
             if (Has(searchSize) && Load(searchSize) is { } exact) return exact;

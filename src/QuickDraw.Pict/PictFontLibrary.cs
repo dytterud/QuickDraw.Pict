@@ -21,6 +21,7 @@ namespace QuickDraw.Pict
         private readonly Dictionary<int, byte[]> nfnt = new Dictionary<int, byte[]>();
         private readonly Dictionary<int, byte[]> font = new Dictionary<int, byte[]>();
         private readonly Dictionary<(bool nfnt, int id), BitmapFont?> parsed = new Dictionary<(bool, int), BitmapFont?>();
+        private readonly Dictionary<int, byte[]> colorTables = new Dictionary<int, byte[]>();
 
         /// <summary>The family used for font number 0 (the system font). Defaults to 0 (Chicago).</summary>
         public int SystemFontId { get; init; }
@@ -57,7 +58,16 @@ namespace QuickDraw.Pict
         }
 
         /// <summary>
-        /// Adds every <c>FOND</c>, <c>NFNT</c> and <c>FONT</c> resource of a Macintosh resource fork (a font
+        /// Adds an <c>fctb</c> resource: the color table of the color <c>NFNT</c> with the same resource id.
+        /// </summary>
+        public void AddFontColorTable(int resourceId, byte[] data)
+        {
+            ArgumentNullException.ThrowIfNull(data);
+            colorTables[resourceId] = data;
+        }
+
+        /// <summary>
+        /// Adds every <c>FOND</c>, <c>NFNT</c>, <c>FONT</c> and <c>fctb</c> resource of a Macintosh resource fork (a font
         /// suitcase, the System file, an application), with the families' names. Other resources are ignored.
         /// </summary>
         /// <returns>The number of font resources added.</returns>
@@ -73,6 +83,7 @@ namespace QuickDraw.Pict
                     case "FOND": AddFamily(id, name, data); added++; break;
                     case "NFNT": AddNfnt(id, data); added++; break;
                     case "FONT": AddFont(id, data, name); added++; break;
+                    case "fctb": AddFontColorTable(id, data); added++; break;
                 }
             }
             return added;
@@ -104,6 +115,21 @@ namespace QuickDraw.Pict
         {
             foreach (var id in font.Keys)
                 if ((id >> 7) == familyId && (id & 127) != 0) yield return id & 127;
+        }
+
+        // A color font's palette: its fctb (same id), else the standard table of its depth.
+        internal PictColor[] ColorFontPalette(int resourceId, int depth)
+        {
+            if (colorTables.TryGetValue(resourceId, out var fctb) && fctb.Length >= 8)
+            {
+                try
+                {
+                    using var b = new System.IO.BinaryReader(new System.IO.MemoryStream(fctb));
+                    return PixMap.ReadColorTable(b, depth);
+                }
+                catch (System.IO.EndOfStreamException) { }
+            }
+            return StandardColorTables.ForId(depth) ?? StandardColorTables.ForId(8)!;
         }
 
         // A strike by resource id: NFNT first, then FONT, as the Font Manager looks them up.

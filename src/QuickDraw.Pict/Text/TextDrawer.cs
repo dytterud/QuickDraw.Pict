@@ -33,6 +33,7 @@ namespace QuickDraw.Pict
             penFrac &= 0xFFFF;
             if (text.Length == 0) return penFrac;
             if (s.MacOS9 && text.Length == 1 && text[0] == '\r') return penFrac;   // Mac OS 9: a lone CR draws nothing
+            if (s.Palette != null) return DrawColorFont(canvas, s, text, penH, penV, penFrac, charExtra, clip, hilitePending, colors);
             var f = s.Font;
 
             int cx = CharExtra(s, charExtra);
@@ -169,6 +170,55 @@ namespace QuickDraw.Pict
             Blit(canvas, ToPixMap(buffer, bufWidth, height, new PictRect(textRect.Top, bufLeft, textRect.Bottom, textRect.Right)),
                 textRect, dstRect, mode, masked, clip, hilitePending, colors);
             return newFrac;
+        }
+
+        // Color fonts (2-8-bit strikes), as Mac OS 9 draws them: each glyph's whole box - its strike columns over the
+        // strike's full height - copied opaque with srcCopy through the font's colors (and the port's colorizing), at
+        // the pen (with its fraction) + the advance so far + kernMax + the glyph's offset. Stretched, only the advance
+        // and the box width scale (width rounded half up; the offsets stay unscaled; verified against Mac OS 9 at
+        // 3/2, 4/3 and 1/3). The text mode, styles and missing-glyph handling are ignored.
+        private static int DrawColorFont(PictBitmap canvas, FontSelection s, ReadOnlySpan<byte> text, int penH, int penV,
+            int penFrac, int charExtra, Region? clip, bool hilitePending, in PortColors colors)
+        {
+            var f = s.Font;
+            var strike = f.StrikeMap(s.Palette!);
+            int cx = CharExtra(s, charExtra), width = Measure(s, text, charExtra);
+            bool stretch = s.Numer != s.Denom;
+            var toRect = new PictRect(penV, penH, penV + s.Numer.v, penH + s.Numer.h);
+            var fromRect = new PictRect(penV, penH, penV + s.Denom.v, penH + s.Denom.h);
+            int top = penV - f.Ascent, span = f.LastChar - f.FirstChar;
+            long penFixed = ((long)penH << 16) | (uint)penFrac;
+            int advanced = 0;                                 // unscaled Fixed advance so far
+            foreach (byte c in text)
+            {
+                int step = c == ' ' ? s.Widths[' '] : unchecked(s.Widths[c] + (s.MacOS9 && s.Widths[c] <= 0 ? 0 : cx));
+                int index = c - f.FirstChar;
+                if (index >= 0 && index <= span)
+                {
+                    int ow = f.OffsetWidths[index], srcLeft = f.Locations[index];
+                    int bits = (short)(f.Locations[index + 1] - srcLeft);
+                    if (bits > 0)
+                    {
+                        long scaled = stretch ? (long)advanced * (ushort)s.Numer.h / (ushort)s.Denom.h : advanced;
+                        int x = (short)((penFixed + scaled) >> 16) + f.KernMax + ((ow >> 8) & 0xFF);
+                        int w = stretch ? (int)((2L * bits * (ushort)s.Numer.h + (ushort)s.Denom.h) / (2L * (ushort)s.Denom.h)) : bits;
+                        var box = new PictRect(top, x, top + f.RectHeight, x + w);
+                        if (stretch)
+                        {
+                            var v = PictureMapping.MapRect(box, fromRect, toRect);
+                            box = new PictRect(v.Top, x, v.Bottom, x + w);
+                        }
+                        if (w > 0)
+                            Bits.CopyBits(canvas, strike, new PictRect(0, srcLeft, f.RectHeight, srcLeft + bits), box,
+                                TransferModes.SrcCopy, clip, hilitePending, colors, false);
+                    }
+                }
+                advanced = unchecked(advanced + step);
+            }
+            int advance = !stretch ? width : s.MacOS9
+                ? FixedMath.FixMulHalfUp(width, FixedMath.FixRatio((short)s.Numer.h, (short)s.Denom.h))
+                : (int)((ulong)(uint)width * (ushort)s.Numer.h / (ushort)s.Denom.h);
+            return (penFrac + advance) & 0xFFFF;
         }
 
         // Character extra (Fixed per point) in strike pixels: x size x text scale x FOutDenom / FOutNumer (Mac OS 9's

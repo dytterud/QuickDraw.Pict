@@ -83,14 +83,30 @@ public class QuickDrawResourceTests
     [Fact]
     public void PixelPattern_ReadsItsPixMapAndColorTable()
     {
-        // ppat type 1: header (28), PixMap at 28 (pmTable 0: the table follows the pixels), pixels at 78.
+        // ppat type 1: header (28), PixMap at 28 (pmTable 86: the table after the pixels), pixels at 78.
         var b = new PictBuilder().U16(1).U16(0).U16(28).U16(0).U16(78).Zeros(4).U16(0).Zeros(4).Zeros(8);
-        PixMap8x1(b, 0).Bytes(0, 1, 0, 1, 0, 1, 0, 1)
+        PixMap8x1(b, 86).Bytes(0, 1, 0, 1, 0, 1, 0, 1)
             .U16(0).U16(0).U16(0).U16(1).U16(0).Rgb(0xFFFF, 0xFFFF, 0xFFFF).U16(1).Rgb(0, 0x8000, 0);
         var pattern = QuickDrawResources.DecodePixelPattern(b.ToArray());
         Assert.Equal((8, 1), (pattern.Width, pattern.Height));
         Assert.Equal(White, pattern[0, 0]);
         Assert.Equal(new PictColor(0, 0x80, 0), pattern[1, 0]);
+        // A table before the pixels (pmTable 0 here) fails to load, as GetPixPat does.
+        var bad = b.ToArray();
+        bad[28 + 42] = bad[28 + 43] = bad[28 + 44] = bad[28 + 45] = 0;
+        Assert.Throws<NotSupportedException>(() => QuickDrawResources.DecodePixelPattern(bad));
+    }
+
+    [Fact]
+    public void PixelPattern_Type0_UsesTheFirstBytesOfThePixelData()
+    {
+        // Mac OS 9 fills a type-0 ppat with patData's first 8 bytes, not the 1-bit fallback at offset 20.
+        var b = new PictBuilder().U16(0).U16(0).U16(0).U16(0).U16(28).Zeros(4).U16(0).Zeros(4)
+            .U8(0xFF).Zeros(7)                                   // 1-bit fallback: row 0 black
+            .U8(0x00).U8(0xFF).Zeros(6);                         // patData: row 1 black
+        var pattern = QuickDrawResources.DecodePixelPattern(b.ToArray());
+        Assert.Equal(White, pattern[0, 0]);
+        Assert.Equal(Black, pattern[0, 1]);
     }
 
     [Fact]

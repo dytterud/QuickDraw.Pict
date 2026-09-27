@@ -208,13 +208,13 @@ public class DrawingTests
     [Fact]
     public void HiliteMode_SwapsBackgroundAndHiliteColorForTheNextInvert()
     {
-        var hilite = new PictColor(0x99, 0xCC, 0xCC);
+        var hilite = new PictColor(0xCC, 0xCC, 0xFF);                    // Mac OS 9's default highlight color
         var bmp = Draw(3, 1, b => b.U16(0x0032).Rect(0, 0, 1, 3)        // erase: white background
             .U16(0x0031).Rect(0, 2, 1, 3)                                  // black pixel stays black under hilite
             .U16(0x001C).U16(0x0033).Rect(0, 0, 1, 3)                      // hilited invert
             .U16(0x0033).Rect(0, 1, 1, 2));                                // plain invert again: hilite bit reset
         Assert.Equal(hilite, bmp[0, 0]);
-        Assert.Equal(new PictColor(255 - 0x99, 255 - 0xCC, 255 - 0xCC), bmp[1, 0]);
+        Assert.Equal(new PictColor(255 - 0xCC, 255 - 0xCC, 255 - 0xFF), bmp[1, 0]);
         Assert.Equal(Black, bmp[2, 0]);
     }
 

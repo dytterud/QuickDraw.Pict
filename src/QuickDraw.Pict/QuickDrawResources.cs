@@ -165,7 +165,8 @@ namespace QuickDraw.Pict
 
         /// <summary>
         /// <c>ppat</c>: a pixel pattern — type, PixMap and pixel offsets, the 1-bit fallback pattern, then the PixMap,
-        /// its color table and pixels. Type 0 (and 2, whose color lives only in memory) decodes the 1-bit pattern.
+        /// its pixels and its color table (located through pmTable). Type 0 decodes the first 8 bytes of the pixel data
+        /// as a 1-bit pattern, as Mac OS 9 does; type 2 decodes the 1-bit fallback.
         /// </summary>
         public static PictBitmap DecodePixelPattern(byte[] data) => PixelPattern(data, 0, data.Length);
 
@@ -187,15 +188,21 @@ namespace QuickDraw.Pict
 
         // ---- helpers ----
 
+        // GetPixPat (Mac OS 9, verified): type 0 draws the first 8 bytes of the pixel data as a 1-bit pattern (not the
+        // 1-bit fallback); types 1 and 3 read the PixMap, whose pmTable locates the color table after the pixels (a
+        // table before them fails to load); type 2 (RGB) uses the 1-bit fallback here.
         private static PictBitmap PixelPattern(byte[] data, int start, int end)
         {
             if (start < 0 || end > data.Length || end - start < 28) throw Truncated("ppat");
             int type = U16(data, start);
-            if (type != 1 && type != 3) return Mono(data, start + 20, 8, 8, null, 0);
             int mapAt = start + (int)U32(data, start + 2), pixelsAt = start + (int)U32(data, start + 6);
+            if (type == 0)
+                return pixelsAt > start && pixelsAt + 8 <= data.Length ? Mono(data, pixelsAt, 8, 8, null, 0) : Mono(data, start + 20, 8, 8, null, 0);
+            if (type != 1 && type != 3) return Mono(data, start + 20, 8, 8, null, 0);
             var pm = ReadPixMap(data, mapAt, out int tableAt, start);
             pm.Data = Slice(data, pixelsAt, pm.RowBytes * pm.Height, "ppat");
-            if (U32(data, mapAt + 42) == 0) tableAt = pixelsAt + pm.Data.Length;    // no pmTable: the table follows the pixels
+            if (U32(data, mapAt + 42) == 0 || tableAt < pixelsAt + pm.Data.Length)
+                throw new NotSupportedException("The ppat's color table does not follow its pixel data.");
             if (tableAt + 8 > data.Length) throw Truncated("ppat");
             using (var b = new BinaryReader(new MemoryStream(data, tableAt, data.Length - tableAt)))
                 pm.Palette = PixMap.ReadColorTable(b, pm.PixelSize);
