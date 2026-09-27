@@ -61,6 +61,9 @@ PictWriter.Write(stream, bitmap, new PictWriteOptions { Format = PictPixelFormat
 - **QuickTime image files and MacPaint documents**: `QuickTimeImageFile` decodes standalone QTIF files (with their
   resolution and ICC profile) and `MacPaintFile` decodes MacPaint (PNTG) documents, MacBinary-wrapped or not. The
   ImageSharp plugin registers both formats for loading.
+- **Icons, cursors and patterns**: `QuickDrawResources` decodes the QuickDraw image resources of classic Mac OS resource
+  forks (`ICON`, `ICN#`, `ics#`, `icm#`, `SICN`, `icl4/8`, `ics4/8`, `icm4/8`, `cicn`, `CURS`, `crsr`, `PAT `,
+  `PAT#`, `ppat`, `ppt#`) from each resource's bytes.
 - **Resolution**: extended version 2 pictures decode at their native resolution, or with
   `Resolution = PictResolution.PictureFrame` at their 72 dpi frame, scaled the way `DrawPicture` scales.
 - **Metadata**: `PictInfo` has the version, frame, bounds, resolution, all picture comments and the embedded ICC profile.

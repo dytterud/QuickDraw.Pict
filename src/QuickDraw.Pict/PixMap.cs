@@ -148,7 +148,7 @@ namespace QuickDraw.Pict
 
         // ColorTable: ctSeed, ctFlags, ctSize (entries - 1), then (value, RGB) entries. A device table (ctFlags bit 15)
         // is indexed by position; otherwise each entry's value is its pixel index. Unlisted indices are black.
-        private static PictColor[] ReadColorTable(BinaryReader b, int pixelSize)
+        internal static PictColor[] ReadColorTable(BinaryReader b, int pixelSize)
         {
             b.ReadU32BE();                                           // ctSeed
             int ctFlags = b.ReadU16BE();

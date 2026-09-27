@@ -34,6 +34,7 @@ Contents
 15. [Writing pictures](#15-writing-pictures)
 16. [Not covered](#16-not-covered)
 17. [Mac OS 9 differences](#17-mac-os-9-differences)
+18. [Icon, cursor and pattern resources](#18-icon-cursor-and-pattern-resources)
 
 ---
 
@@ -1735,3 +1736,93 @@ way in both modes:
 
 Differences that only concern other destinations (dithering, 1-to-8-bit copies, indexed destinations, black-and-white
 ports) or the destination's alpha byte do not apply to a 32-bit RGBA canvas.
+
+---
+
+## 18. Icon, cursor and pattern resources
+
+These are the QuickDraw image resources of classic Mac OS resource forks. They are not part of PICT, but they use
+the same structures. All are big-endian.
+
+- **1-bit images:** 1 = black. Where there is a mask, a 0 mask bit is transparent.
+- **Indexed images** are converted with the high byte of each 16-bit colour component, as in PICT.
+
+| Type | Size | Layout |
+|---|---|---|
+| `ICON` | 32×32 | 128 bytes, 1 bit per pixel, unmasked |
+| `ICN#` | 32×32 | 128 bytes icon, then 128 bytes mask |
+| `ics#` | 16×16 | 32 bytes icon, then 32 bytes mask |
+| `icm#` | 16×12 | 24 bytes icon, then 24 bytes mask |
+| `SICN` | 16×16 each | any number of 32-byte 1-bit icons, unmasked |
+| `icl4`, `icl8` | 32×32 | 4- or 8-bit pixels in the standard colour table |
+| `ics4`, `ics8` | 16×16 | 4- or 8-bit pixels in the standard colour table |
+| `icm4`, `icm8` | 16×12 | 4- or 8-bit pixels in the standard colour table |
+| `PAT ` | 8×8 | 8 bytes |
+| `PAT#` | 8×8 each | u16 count, then 8 bytes each |
+| `CURS` | 16×16 | 32 bytes data, 32 bytes mask, then the hotspot as a Point (v, h) |
+
+**4- and 8-bit icons:**
+
+- The standard colour tables are the Mac `clut` 4 and 8. Take their exact 16-bit values' high bytes.
+- `clut` 8 is the 6×6×6 cube **without black** (215 entries, white first, red slowest), then red, green, blue and
+  gray ramps of `EE DD BB AA 88 77 55 44 22 11`, then **black at 255**.
+- There is no mask in the resource. The mask of the 1-bit icon list with the same id and size (`ICN#`, `ics#`,
+  `icm#`) applies.
+
+**Cursors:**
+
+| Mask bit | Data bit | Result |
+|---|---|---|
+| 1 | 1 | black |
+| 1 | 0 | white |
+| 0 | 0 | transparent |
+| 0 | 1 | **inverts** the screen |
+
+**`cicn`** (colour icon):
+
+- A header, then variable-length data:
+  - a 50-byte PixMap (baseAddr, rowBytes & `$3FFF`, bounds, pmVersion, packType, packSize, hRes, vRes, pixelType,
+    pixelSize, cmpCount, cmpSize, planeBytes, pmTable, pmReserved);
+  - a 14-byte mask BitMap (baseAddr, rowBytes, bounds);
+  - a 14-byte 1-bit BitMap (rowBytes 0 when absent);
+  - a 4-byte iconData;
+  - the mask bits, then the 1-bit bits;
+  - a ColorTable (§4.6);
+  - the pixels, unpacked, `rowBytes × height` bytes.
+- The mask masks the colour pixels. Rows beyond the mask's data are unmasked.
+
+**`crsr`** (colour cursor):
+
+- Header:
+
+  | Offset | Size | Field |
+  |---|---|---|
+  | 0 | 2 | crsrType: `$8000` monochrome, `$8001` colour |
+  | 2 | 4 | offset of the PixMap |
+  | 6 | 4 | offset of the pixels |
+  | 10 | 10 | reserved |
+  | 20 | 32 | 1-bit data |
+  | 52 | 32 | mask |
+  | 84 | 4 | hotspot, as a Point (v, h) |
+  | 88 | 8 | reserved |
+
+- The PixMap's pmTable is the offset of its ColorTable.
+- Mask 1 paints the colour pixel. Mask 0 is transparent, or inverts the screen where the 1-bit data is 1.
+
+**`ppat`** (pixel pattern):
+
+- Header:
+
+  | Offset | Size | Field |
+  |---|---|---|
+  | 0 | 2 | patType |
+  | 2 | 4 | offset of the PixMap |
+  | 6 | 4 | offset of the pixels |
+  | 10 | 10 | reserved |
+  | 20 | 8 | the 1-bit pattern |
+
+- Types 1 and 3 decode the PixMap. Its pmTable is the offset of the ColorTable; when pmTable is 0, the table
+  follows the pixels.
+- Types 0 and 2 use the 1-bit pattern.
+- **`ppt#`:** a u16 count, then that many u32 offsets to `ppat` data.
+
