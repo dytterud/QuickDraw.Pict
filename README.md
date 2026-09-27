@@ -58,6 +58,9 @@ PictWriter.Write(stream, bitmap, new PictWriteOptions { Format = PictPixelFormat
 - **QuickTime images**: `raw `, `rle ` (Animation), `rpza` (Road Pizza), `smc ` (Graphics), `cvid` (Cinepak), `8BPS`,
   `yuv2`, `YVU9`, `tga ` and `PNTG` are decoded by the core; others go to an `IPictImageCodec`. A decoded image skips
   the picture's "QuickTime is required" fallback.
+- **QuickTime image files and MacPaint documents**: `QuickTimeImageFile` decodes standalone QTIF files (with their
+  resolution and ICC profile) and `MacPaintFile` decodes MacPaint (PNTG) documents, MacBinary-wrapped or not. The
+  ImageSharp plugin registers both formats for loading.
 - **Resolution**: extended version 2 pictures decode at their native resolution, or with
   `Resolution = PictResolution.PictureFrame` at their 72 dpi frame, scaled the way `DrawPicture` scales.
 - **Metadata**: `PictInfo` has the version, frame, bounds, resolution, all picture comments and the embedded ICC profile.

@@ -1526,6 +1526,43 @@ After the u32 length:
 
 ---
 
+### 13.4 QuickTime image files (QTIF)
+
+The standalone form of a QuickTime image (`.qtif`, `.qti`, `.qif`) is a sequence of atoms:
+
+| Type | Field |
+|---|---|
+| u32 | atom size, including this 8-byte header. 0 = to the end of the file; 1 = a u64 size follows the type. |
+| 4 chars | atom type |
+| bytes | content |
+
+- **`idsc`:** an image description, as in §13.1, including any colour table.
+- **`idat`:** the compressed image. Decode it with the description's codec (§13.2).
+- **`iicc`:** an ICC profile (optional).
+- Other atoms (`meta`, …) can be ignored.
+- **Detection:** the first atom's type is `idsc`, `idat` or `iicc`.
+
+### 13.5 MacPaint documents (PNTG)
+
+MacPaint documents (`.pntg`, `.pnt`, `.mac`; file type `PNTG`) are 576 × 720 at 1 bit per pixel, with 1 = black:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | u32 | version: 0, 2 or 3 |
+| 4 | 304 | 38 fill patterns of 8 bytes (versions 2 and 3) |
+| 308 | 204 | padding (zeros) |
+| 512 | — | 720 rows of 72 bytes, each PackBits-compressed on its own |
+
+- The same rows, without the 512-byte header, are the data of the QuickTime `PNTG` codec (§13.2).
+- A **MacBinary** wrapper may precede the file:
+  - a 128-byte header: byte 0 is 0, a 1–63 character name starts at byte 1, and the file type `PNTG` is at byte 65;
+  - the data fork's length is at byte 83;
+  - the data fork starts at byte 128.
+- MacPaint has no magic number. For detection, check the version, the zero padding, and that the first row unpacks
+  to exactly 72 bytes; the file type or extension is a stronger hint.
+
+---
+
 ## 14. Picture comments
 
 - **ShortComment** carries a u16 kind; **LongComment** a u16 kind, a u16 size and data.

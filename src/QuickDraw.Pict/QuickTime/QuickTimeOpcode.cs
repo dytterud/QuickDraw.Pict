@@ -40,9 +40,26 @@ namespace QuickDraw.Pict
                 try { q.Mask = Region.Read(r); } catch (System.IO.EndOfStreamException) { }
                 p += maskSize;
             }
-            if (p + 86 > block.Length) return null;
+            var description = ReadDescription(block, p, out int idSize);
+            if (description == null) return null;
+            q.Description = description;
+            int dataStart = p + Math.Max(idSize, 86);
+            if (dataStart > block.Length) return null;
+            q.Data = block.AsSpan(dataStart).ToArray();
+            return q;
+        }
+
+        // An ImageDescription at p (86 bytes: idSize, cType, reserved, version, revision, vendor, temporal and spatial
+        // quality, width, height, hRes, vRes, dataSize, frameCount, name[32], depth, clutID), with the color table that
+        // follows it when clutID is 0 (else the standard table for the id or depth). Null if it does not fit.
+        internal static PictImageDescription? ReadDescription(byte[] block, int p, out int idSize)
+        {
+            idSize = 0;
+            if (p < 0 || p + 86 > block.Length) return null;
             int idStart = p;
-            int idSize = I32();
+            int I32() { int v = BinaryPrimitives.ReadInt32BigEndian(block.AsSpan(p)); p += 4; return v; }
+            short I16() { short v = BinaryPrimitives.ReadInt16BigEndian(block.AsSpan(p)); p += 2; return v; }
+            idSize = I32();
             string codec = Encoding.Latin1.GetString(block, p, 4);
             p += 4 + 8 + 2 + 2 + 4 + 4 + 4;                           // cType, reserved, version, revision, vendor, qualities
             int width = (ushort)I16(), height = (ushort)I16();
@@ -57,11 +74,7 @@ namespace QuickDraw.Pict
             if (clutId == 0 && idSize > 86 && p + 8 <= block.Length)
                 table = ReadColorTable(block, p, idStart + idSize);
             table ??= StandardColorTables.ForDepth(depth);
-            q.Description = new PictImageDescription(codec, width, height, depth, clutId, hRes, vRes, name) { ColorTable = table };
-            int dataStart = idStart + Math.Max(idSize, 86);
-            if (dataStart > block.Length) return null;
-            q.Data = block.AsSpan(dataStart).ToArray();
-            return q;
+            return new PictImageDescription(codec, width, height, depth, clutId, hRes, vRes, name) { ColorTable = table };
         }
 
         // A ColorTable stored after the image description: ctSeed, ctFlags, ctSize, then (value, r, g, b) entries.

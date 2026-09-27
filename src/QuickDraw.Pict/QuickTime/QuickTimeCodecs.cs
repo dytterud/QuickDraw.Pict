@@ -178,7 +178,10 @@ namespace QuickDraw.Pict
         }
 
         // 'PNTG': MacPaint, 576 x 720 1-bit, rows PackBits-compressed back to back (1 = black).
-        private static PictBitmap? MacPaint(byte[] data)
+        private static PictBitmap? MacPaint(byte[] data) => MacPaintBits(data);
+
+        // MacPaint rows (after any file header): rows missing from the data stay white.
+        internal static PictBitmap? MacPaintBits(ReadOnlySpan<byte> data)
         {
             const int width = 576, height = 720, rowBytes = width / 8;
             var bits = new byte[rowBytes * height];
