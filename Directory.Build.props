@@ -9,8 +9,8 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <Deterministic>true</Deterministic>
     <PackageReleaseNotes>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)CHANGELOG.md'))</PackageReleaseNotes>
-    <PackageProjectUrl>https://github.com/dytterud/QuickDraw.Pict</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/dytterud/QuickDraw.Pict.git</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/inexin/QuickDraw.Pict</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/inexin/QuickDraw.Pict.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <!-- Source Link (built into the .NET SDK for GitHub): symbols point at the commit's sources. -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
