@@ -19,6 +19,14 @@ namespace QuickDraw.Pict
             return unchecked((int)result);
         }
 
+        // Mac OS 9's internal fixed multiply: the product + 0x8000, shifted right 16 (halves toward +infinity),
+        // saturating to the int range.
+        public static int FixMulHalfUp(int a, int b)
+        {
+            long r = ((long)a * b + 0x8000) >> 16;
+            return r > int.MaxValue ? int.MaxValue : r < int.MinValue ? int.MinValue : (int)r;
+        }
+
         // FixRatio: numer / denom of two integers as a truncated Fixed; a zero denominator saturates by the
         // numerator's sign.
         public static int FixRatio(short numer, short denom)

@@ -18,6 +18,7 @@ namespace QuickDraw.Pict
         public int PackType;
         public int PixelType;                        // 0 indexed, 16 direct (RGBDirect)
         public bool IsPixMap;
+        public bool MacOS9;                          // read the pixel data as Mac OS 9's QuickDraw does
         public PictColor[] Palette = Array.Empty<PictColor>();
         public byte[] Data = Array.Empty<byte>();
 
@@ -83,15 +84,16 @@ namespace QuickDraw.Pict
 
         // BitsRect/BitsRgn/PackBitsRect/PackBitsRgn operands up to (not including) srcRect: a 1-bit BitMap, or a
         // PixMap + ColorTable when rowBytes has its high bit set.
-        public static PixMap ReadIndexedHeader(BinaryReader b)
+        // Mac OS 9 reads a color table whenever pixelSize < 9, whatever the opcode; the ROM by the opcode.
+        public static PixMap ReadIndexedHeader(BinaryReader b, bool macOS9)
         {
             int rawRowBytes = b.ReadU16BE();
-            var pm = new PixMap { RowBytes = rawRowBytes & RowBytesMask, IsPixMap = (rawRowBytes & 0x8000) != 0 };
+            var pm = new PixMap { RowBytes = rawRowBytes & RowBytesMask, IsPixMap = (rawRowBytes & 0x8000) != 0, MacOS9 = macOS9 };
             pm.Bounds = b.ReadRectBE();
             if (pm.IsPixMap)
             {
                 pm.ReadPixMapFields(b);
-                pm.Palette = ReadColorTable(b, pm.PixelSize);
+                if (!macOS9 || pm.PixelSize < 9) pm.Palette = ReadColorTable(b, pm.PixelSize);
             }
             else
             {
@@ -101,24 +103,25 @@ namespace QuickDraw.Pict
         }
 
         // DirectBitsRect/DirectBitsRgn operands up to srcRect: baseAddr (always $000000FF), then a PixMap.
-        public static PixMap ReadDirectHeader(BinaryReader b)
+        public static PixMap ReadDirectHeader(BinaryReader b, bool macOS9)
         {
             b.ReadU32BE();                                           // baseAddr
             int rawRowBytes = b.ReadU16BE();
-            var pm = new PixMap { RowBytes = rawRowBytes & RowBytesMask, IsPixMap = true };
+            var pm = new PixMap { RowBytes = rawRowBytes & RowBytesMask, IsPixMap = true, MacOS9 = macOS9 };
             pm.Bounds = b.ReadRectBE();
             pm.ReadPixMapFields(b);
+            if (macOS9 && pm.PixelSize < 9) pm.Palette = ReadColorTable(b, pm.PixelSize);
             return pm;
         }
 
         // BkPixPat/PnPixPat/FillPixPat full pattern (type 1): PixMap (rowBytes first, no baseAddr) + ColorTable + PixData.
-        public static PixMap ReadPatternPixMap(BinaryReader b)
+        public static PixMap ReadPatternPixMap(BinaryReader b, bool macOS9)
         {
             int rawRowBytes = b.ReadU16BE();
-            var pm = new PixMap { RowBytes = rawRowBytes & RowBytesMask, IsPixMap = true };
+            var pm = new PixMap { RowBytes = rawRowBytes & RowBytesMask, IsPixMap = true, MacOS9 = macOS9 };
             pm.Bounds = b.ReadRectBE();
             pm.ReadPixMapFields(b);
-            pm.Palette = ReadColorTable(b, pm.PixelSize);
+            if (!macOS9 || pm.PixelSize < 9) pm.Palette = ReadColorTable(b, pm.PixelSize);
             pm.ReadPixData(b);
             return pm;
         }
@@ -191,7 +194,7 @@ namespace QuickDraw.Pict
             var line = new byte[RowBytes];
             for (int y = 0; y < height; y++)
             {
-                UnpackRow(b, line, sizesAreWords, wordChunks: false);
+                UnpackRow(b, line, sizesAreWords, wordChunks: false, MacOS9);
                 Buffer.BlockCopy(line, 0, Data, y * RowBytes, RowBytes);
             }
         }
@@ -202,18 +205,20 @@ namespace QuickDraw.Pict
         // rows; 4: component-plane PackBits rows, cmpCount planes rowBytes/4 wide landing on pixel bytes
         // 4 - cmpCount .. 3 (alpha stays 0 with three planes); 5 and up: the rows are read and discarded, leaving the
         // pixels zero.
+        // Mac OS 9 fixes the ROM's 16-bit packType 0: word PackBits, like packType 3.
         private void ReadDirect(BinaryReader b, int height)
         {
             bool sizesAreWords = RowBytes > 250;
             int pixels = RowBytes / 4;
-            switch (PackType)
+            int packType = MacOS9 && PixelSize == 16 && PackType == 0 ? 3 : PackType;
+            switch (packType)
             {
                 case 3:
                 {
                     var line = new byte[RowBytes];
                     for (int y = 0; y < height; y++)
                     {
-                        UnpackRow(b, line, sizesAreWords, wordChunks: true);
+                        UnpackRow(b, line, sizesAreWords, wordChunks: true, MacOS9);
                         Buffer.BlockCopy(line, 0, Data, y * RowBytes, RowBytes);
                     }
                     return;
@@ -224,7 +229,7 @@ namespace QuickDraw.Pict
                     var packed = new byte[pixels * planes];
                     for (int y = 0; y < height; y++)
                     {
-                        UnpackRow(b, packed, sizesAreWords, wordChunks: false);
+                        UnpackRow(b, packed, sizesAreWords, wordChunks: false, MacOS9);
                         int row = y * RowBytes;
                         for (int k = 0; k < planes; k++)
                             for (int x = 0; x < pixels; x++)
@@ -233,7 +238,7 @@ namespace QuickDraw.Pict
                     return;
                 }
                 default:
-                    if (PackType >= 5)
+                    if (packType >= 5)
                     {
                         for (int y = 0; y < height; y++)
                             b.Skip(sizesAreWords ? b.ReadU16BE() : b.ReadByte());
@@ -249,9 +254,9 @@ namespace QuickDraw.Pict
         }
 
         // One PackBits scan line: [byteCount] then flag-counted runs until byteCount is consumed. flag < 0 repeats the
-        // next unit 1 - flag times; flag >= 0 copies flag + 1 units; -128 is a no-op (Apple TN1023). A unit is a
-        // byte, or a word for 16-bit pixels.
-        private static void UnpackRow(BinaryReader b, byte[] outRow, bool sizesAreWords, bool wordChunks)
+        // next unit 1 - flag times; flag >= 0 copies flag + 1 units; -128 is a no-op in the ROM (Apple TN1023) and a
+        // run of 129 in Mac OS 9. A unit is a byte, or a word for 16-bit pixels.
+        private static void UnpackRow(BinaryReader b, byte[] outRow, bool sizesAreWords, bool wordChunks, bool macOS9)
         {
             int packedBytes = sizesAreWords ? b.ReadU16BE() : b.ReadByte();
             var src = b.ReadExactly(packedBytes);
@@ -261,7 +266,7 @@ namespace QuickDraw.Pict
             while (ip < src.Length && op < outRow.Length)
             {
                 sbyte flag = (sbyte)src[ip++];
-                if (flag == -128) continue;
+                if (flag == -128 && !macOS9) continue;
                 if (flag < 0)
                 {
                     int n = 1 - flag;

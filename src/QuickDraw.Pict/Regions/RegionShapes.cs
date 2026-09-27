@@ -34,11 +34,12 @@ namespace QuickDraw.Pict
         public static Region FrameRoundRect(PictRect r, int ovalWidth, int ovalHeight, int penH, int penV) =>
             Curve(r, ovalWidth, ovalHeight, true, penH, penV, 0, 360);
 
-        public static Region Arc(PictRect r, int startAngle, int arcAngle) =>
-            Curve(r, r.Width, r.Height, false, 0, 0, startAngle, arcAngle);
+        // Mac OS 9 forms the arc slopes with a half-up fixed multiply (FixedMath.FixMulHalfUp).
+        public static Region Arc(PictRect r, int startAngle, int arcAngle, bool macOS9) =>
+            Curve(r, r.Width, r.Height, false, 0, 0, startAngle, arcAngle, macOS9);
 
-        public static Region FrameArc(PictRect r, int startAngle, int arcAngle, int penH, int penV) =>
-            Curve(r, r.Width, r.Height, true, penH, penV, startAngle, arcAngle);
+        public static Region FrameArc(PictRect r, int startAngle, int arcAngle, int penH, int penV, bool macOS9) =>
+            Curve(r, r.Width, r.Height, true, penH, penV, startAngle, arcAngle, macOS9);
 
         // ---- ellipse edges ----
 
@@ -106,7 +107,7 @@ namespace QuickDraw.Pict
         // |arcAngle| < 360 clipped to the wedge between the rays at startAngle and startAngle + arcAngle (degrees,
         // 0 = 12 o'clock, clockwise).
         private static Region Curve(PictRect r, int ovalWidth, int ovalHeight, bool hollow, int penH, int penV,
-            int startAngle, int arcAngle)
+            int startAngle, int arcAngle, bool macOS9 = false)
         {
             if (r.IsEmpty || arcAngle == 0) return Region.Empty;
             var rows = new Scanlines(r.Left, r.Right);
@@ -131,8 +132,9 @@ namespace QuickDraw.Pict
                 midRow = (short)(top + bottom) >> 1;
                 int midColumn = (short)(left + right) >> 1;
                 int aspect = FixedMath.FixRatio((short)(right - left), (short)(bottom - top));
-                slope1 = FixedMath.FixMul(FixedMath.SlopeFromAngle(startAngle), aspect);
-                slope2 = FixedMath.FixMul(FixedMath.SlopeFromAngle(stopAngle), aspect);
+                Func<int, int, int> mul = macOS9 ? FixedMath.FixMulHalfUp : FixedMath.FixMul;
+                slope1 = mul(FixedMath.SlopeFromAngle(startAngle), aspect);
+                slope2 = mul(FixedMath.SlopeFromAngle(stopAngle), aspect);
                 int halfHeight = (ushort)(bottom - top) >> 1;
                 ray1 = (midColumn << 16) - TimesHalfHeight(slope1, halfHeight);
                 ray2 = (midColumn << 16) - TimesHalfHeight(slope2, halfHeight);

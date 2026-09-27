@@ -13,6 +13,10 @@ namespace QuickDraw.Pict
     // the fraction for every ratio: stretching replicates pixels; shrinking merges each group, rows first then
     // columns, into the largest index (2-8 bits) or the truncated per-component average (16 and 32 bits). Merging
     // and scaling happen at the source depth, before color conversion.
+    //
+    // Mac OS 9's rewrite differs: its vertical DDA takes, for an enlargement, destination row k from source row
+    // ceil(s (2k + 1) / 2d) - 1, and for a reduction groups rows between boundaries floor((k + 1) s / d + 1/2); a 1-bit
+    // x1.5 stretch is aabccd; and 16/32-bit merges promote to 8-bit components and average rounded.
     internal static class Bits
     {
         public static void CopyBits(PictBitmap canvas, PixMap src, PictRect srcRect, PictRect dstRect, int mode,
@@ -26,8 +30,9 @@ namespace QuickDraw.Pict
             int srcW = srcRect.Width, srcH = srcRect.Height, dstW = dstRect.Width, dstH = dstRect.Height;
             int srcTop = srcRect.Top - src.Bounds.Top, srcLeft = srcRect.Left - src.Bounds.Left;
             bool scaled = srcW != dstW || srcH != dstH;
-            var rows = scaled ? RowGroups(srcTop, srcH, dstH, src.Height) : null;
-            var cols = scaled ? (src.PixelSize == 1 ? ColumnGroups(srcW, dstW) : DeepColumnGroups(srcW, dstW)) : null;
+            bool macOS9 = colors.MacOS9;
+            var rows = scaled ? (macOS9 ? RowGroupsMacOS9(srcTop, srcH, dstH, src.Height) : RowGroups(srcTop, srcH, dstH, src.Height)) : null;
+            var cols = scaled ? (src.PixelSize == 1 ? ColumnGroups(srcW, dstW, macOS9) : DeepColumnGroups(srcW, dstW)) : null;
             bool averagedRows = dstH < srcH;
 
             mode &= ~TransferModes.DitherCopy;
@@ -66,7 +71,7 @@ namespace QuickDraw.Pict
                         }
                         else
                         {
-                            if (!TryDeep(src, group, srcLeft, first, end, out var color, out bool averaged, out byte a)) continue;
+                            if (!TryDeep(src, group, srcLeft, first, end, macOS9, out var color, out bool averaged, out byte a)) continue;
                             write = ApplyColorSource(mode, hilitePending, color, dst, colors, out result);
                             if (keepAlpha) alpha = averaged || averagedRows ? (byte)0 : a;
                         }
@@ -101,7 +106,7 @@ namespace QuickDraw.Pict
 
         // A scaled deep pixel: the rows then columns of its group merged at the source depth (largest index for 2-8
         // bits; truncated per-component average of 5-bit or 8-bit components for 16 and 32 bits), then converted.
-        private static bool TryDeep(PixMap src, int[] rows, int srcLeft, int first, int end, out PictColor color,
+        private static bool TryDeep(PixMap src, int[] rows, int srcLeft, int first, int end, bool macOS9, out PictColor color,
             out bool averaged, out byte alpha)
         {
             color = default;
@@ -124,6 +129,7 @@ namespace QuickDraw.Pict
                         continue;
                     }
                     var (cr, cg, cb) = src.GetComponents(x, row);
+                    if (macOS9 && src.PixelSize == 16) (cr, cg, cb) = (Expand5(cr), Expand5(cg), Expand5(cb));
                     r += cr; g += cg; b += cb;
                     n++;
                     alpha = src.GetAlpha(x, row);
@@ -133,7 +139,8 @@ namespace QuickDraw.Pict
                 columns++;
                 if (src.PixelSize > 8)
                 {
-                    sumR += r / n; sumG += g / n; sumB += b / n;
+                    int half = macOS9 ? n / 2 : 0;
+                    sumR += (r + half) / n; sumG += (g + half) / n; sumB += (b + half) / n;
                 }
             }
             if (columns == 0) return false;
@@ -143,6 +150,12 @@ namespace QuickDraw.Pict
                 return true;
             }
             if (columns > 1) averaged = true;
+            if (macOS9)
+            {
+                int half = columns / 2;
+                color = new PictColor((byte)((sumR + half) / columns), (byte)((sumG + half) / columns), (byte)((sumB + half) / columns));
+                return true;
+            }
             int R = columns == 2 ? sumR >> 1 : sumR / columns, G = columns == 2 ? sumG >> 1 : sumG / columns,
                 B = columns == 2 ? sumB >> 1 : sumB / columns;
             color = src.PixelSize == 16
@@ -197,6 +210,31 @@ namespace QuickDraw.Pict
             return result;
         }
 
+        // Mac OS 9's vertical DDA: enlarging, destination row k takes source row ceil(s (2k + 1) / 2d) - 1; reducing,
+        // destination row k merges source rows [b(k - 1), b(k)) with b(k) = floor((k + 1) s / d + 1/2), b(-1) = 0. Rows
+        // past the bitmap are dropped (a row left with none is not drawn).
+        internal static int[]?[] RowGroupsMacOS9(int srcTop, int srcHeight, int dstHeight, int bitmapHeight)
+        {
+            var result = new int[]?[dstHeight];
+            long s = srcHeight, d = dstHeight;
+            int previous = 0;
+            for (int k = 0; k < dstHeight; k++)
+            {
+                var rows = new List<int>();
+                if (dstHeight == srcHeight) rows.Add(k);
+                else if (dstHeight > srcHeight) rows.Add((int)((s * (2 * k + 1) + 2 * d - 1) / (2 * d)) - 1);
+                else
+                {
+                    int next = (int)((2 * (k + 1) * s + d) / (2 * d));
+                    for (int i = previous; i < next; i++) rows.Add(i);
+                    previous = next;
+                }
+                rows.RemoveAll(i => srcTop + i >= bitmapHeight);
+                result[k] = rows.Count == 0 ? null : rows.ConvertAll(i => srcTop + i).ToArray();
+            }
+            return result;
+        }
+
         // Deep pixels: stretching replicates src[((f >> 1) + j * f) >> 16] with f = FixRatio(srcW, dstW); shrinking groups
         // source column i into destination ((f >> 1) + i * f) >> 16 with f = FixRatio(dstW, srcW) (16-bit fractions).
         internal static (int first, int end)[] DeepColumnGroups(int srcWidth, int dstWidth)
@@ -230,7 +268,7 @@ namespace QuickDraw.Pict
         }
 
         // For each destination column: the source columns [first, end) (relative to srcRect's left) that land on it.
-        internal static (int first, int end)[] ColumnGroups(int srcWidth, int dstWidth)
+        internal static (int first, int end)[] ColumnGroups(int srcWidth, int dstWidth, bool macOS9 = false)
         {
             var result = new (int first, int end)[dstWidth];
             if (dstWidth == srcWidth)
@@ -247,6 +285,7 @@ namespace QuickDraw.Pict
                     0x4000 => j => j / 4,
                     0x2000 => j => j / 8,
                     0x1000 => j => j / 16,
+                    0xAAAA when macOS9 => j => 2 * (j / 3) + (j % 3 == 2 ? 1 : 0),   // x1.5 (Mac OS 9): a a b
                     0xAAAA => j => 2 * (j / 3) + (j % 3 == 0 ? 0 : 1),        // x1.5: a b b per source pair
                     0x5555 => j => j / 3,
                     0x2AAA => j => j / 6,

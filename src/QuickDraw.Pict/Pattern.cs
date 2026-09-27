@@ -16,16 +16,17 @@ namespace QuickDraw.Pict
 
         public static Pattern FromMono(byte[] rows) => new Pattern { Mono = rows };
 
-        // BkPixPat / PnPixPat / FillPixPat operands: patType, the 1-bit fallback pattern, then an RGBColor (type 2)
-        // or PixMap + ColorTable + PixData (any other type, as Executor's eatPixPat).
-        public static Pattern Read(BinaryReader b)
+        // BkPixPat / PnPixPat / FillPixPat operands: patType, the 1-bit fallback pattern, then a PixMap + ColorTable +
+        // PixData or an RGBColor. The ROM reads the RGBColor for type 2 only; Mac OS 9 reads a PixMap for types 1 and 3
+        // only.
+        public static Pattern Read(BinaryReader b, bool macOS9)
         {
             int patType = b.ReadU16BE();
             var pattern = FromMono(b.ReadExactly(8));
-            if (patType == 2)
+            if (macOS9 ? patType != 1 && patType != 3 : patType == 2)
                 pattern.Rgb = PictReader.ReadRgb(b);
             else
-                pattern.Pixels = PixMap.ReadPatternPixMap(b);
+                pattern.Pixels = PixMap.ReadPatternPixMap(b, macOS9);
             return pattern;
         }
     }

@@ -38,6 +38,23 @@ namespace QuickDraw.Pict
         /// srcCopy. QuickDraw itself ignores it, and many pictures leave it zero, so it is off by default.
         /// </summary>
         public bool PreserveAlpha { get; init; }
+
+        /// <summary>
+        /// Which Macintosh QuickDraw to reproduce. Defaults to <see cref="PictQuickDraw.MacOS9"/>, the QuickDraw of
+        /// Mac OS 9 (and of emulators running it); <see cref="PictQuickDraw.MacRom"/> draws as the classic 68k
+        /// QuickDraw in the Macintosh ROM.
+        /// </summary>
+        public PictQuickDraw QuickDraw { get; init; } = PictQuickDraw.MacOS9;
+    }
+
+    /// <summary>The QuickDraw implementation a picture is drawn as. The two differ in a few rounding and edge rules.</summary>
+    public enum PictQuickDraw
+    {
+        /// <summary>Mac OS 9's native PowerPC QuickDraw and Font Manager.</summary>
+        MacOS9,
+
+        /// <summary>The 68k QuickDraw and Font Manager of the Macintosh ROM (Mac OS ROM 1.6), as on Macs before Mac OS 9.</summary>
+        MacRom,
     }
 
     /// <summary>The size a picture is drawn at.</summary>

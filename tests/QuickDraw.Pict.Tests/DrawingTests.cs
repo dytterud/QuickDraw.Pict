@@ -13,12 +13,14 @@ public class DrawingTests
     private static readonly PictColor Red = new(255, 0, 0);
     private static readonly PictColor Blue = new(0, 0, 255);
 
-    private static PictBitmap Draw(int width, int height, Action<PictBuilder> ops)
+    private static readonly PictDecodeOptions Rom = new() { QuickDraw = PictQuickDraw.MacRom };
+
+    private static PictBitmap Draw(int width, int height, Action<PictBuilder> ops, PictDecodeOptions? options = null)
     {
         var b = PictBuilder.V2(0, 0, height, width);
         ops(b);
         b.Align().U16(0x00FF);
-        return PictReader.Decode(b.ToArray());
+        return PictReader.Decode(b.ToArray(), options);
     }
 
     // '#' = black, '.' = untouched, 'w' = white, 'r' = red, 'b' = blue, '?' = anything else.
@@ -89,15 +91,29 @@ public class DrawingTests
     [Fact]
     public void PaintRoundRect_WithZeroOvalHeight_InsetsEveryRowByHalfTheOvalWidth()
     {
-        var bmp = Draw(10, 3, b => b.U16(0x000B).Point(0, 6).U16(0x0041).Rect(0, 0, 3, 10));
+        var bmp = Draw(10, 3, b => b.U16(0x000B).Point(0, 6).U16(0x0041).Rect(0, 0, 3, 10), Rom);
         Assert.Equal(new[] { "...####...", "...####...", "...####..." }, Picture(bmp));
+    }
+
+    [Fact]
+    public void PaintRoundRect_WithZeroOvalHeight_IsAPlainRectOnMacOS9()
+    {
+        var bmp = Draw(10, 3, b => b.U16(0x000B).Point(0, 6).U16(0x0041).Rect(0, 0, 3, 10));
+        Assert.Equal(new[] { "##########", "##########", "##########" }, Picture(bmp));
     }
 
     [Fact]
     public void DitherCopy_DrawsNoOvalButCopiesRects()
     {
-        var bmp = Draw(4, 2, b => b.U16(0x0008).U16(64).U16(0x0051).Rect(0, 0, 2, 2).U16(0x0031).Rect(0, 2, 2, 4));
+        var bmp = Draw(4, 2, b => b.U16(0x0008).U16(64).U16(0x0051).Rect(0, 0, 2, 2).U16(0x0031).Rect(0, 2, 2, 4), Rom);
         Assert.Equal(new[] { "..##", "..##" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void DitherCopy_OnMacOS9_DrawsOvalsAsCopy()
+    {
+        var bmp = Draw(4, 2, b => b.U16(0x0008).U16(64).U16(0x0051).Rect(0, 0, 2, 2).U16(0x0031).Rect(0, 2, 2, 4));
+        Assert.Equal(new[] { "####", "####" }, Picture(bmp));
     }
 
     [Fact]
@@ -154,8 +170,16 @@ public class DrawingTests
         // DrawPicture adds Origin's dh to patAlign, so the pattern stays fixed to the shapes' own coordinates:
         // fill pattern column 1 (0x40) lands on canvas x = 0 after Origin(dh = 1).
         var bmp = Draw(4, 1, b => b.U16(0x000A).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40)
-            .U16(0x000C).Point(0, 1).U16(0x0034).Rect(0, 1, 1, 5));
+            .U16(0x000C).Point(0, 1).U16(0x0034).Rect(0, 1, 1, 5), Rom);
         Assert.Equal(new[] { "#www" }, Picture(bmp));
+    }
+
+    [Fact]
+    public void OriginOpcode_OnMacOS9_LeavesThePatternOnTheCanvas()
+    {
+        var bmp = Draw(4, 1, b => b.U16(0x000A).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40)
+            .U16(0x000C).Point(0, 1).U16(0x0034).Rect(0, 1, 1, 5));
+        Assert.Equal(new[] { "w#ww" }, Picture(bmp));
     }
 
     [Fact]
@@ -203,8 +227,18 @@ public class DrawingTests
         // Weights R $FFFF, G $4000, B $8000 (not all equal): (s * w + d * (65536 - w)) >> 16 with 8-bit s, d.
         var bmp = Draw(1, 1, b => b.U16(0x001A).Rgb(0, 0, 0).U16(0x0031).Rect(0, 0, 1, 1)
             .U16(0x001F).Rgb(0xFFFF, 0x4000, 0x8000).U16(0x001A).Rgb(0xFFFF, 0xFFFF, 0xFFFF)
-            .U16(0x0008).U16(32).U16(0x0031).Rect(0, 0, 1, 1));
+            .U16(0x0008).U16(32).U16(0x0031).Rect(0, 0, 1, 1), Rom);
         Assert.Equal(new PictColor(254, 63, 127), bmp[0, 0]);
+    }
+
+    [Fact]
+    public void ArithmeticBlend_OnMacOS9_Rounds()
+    {
+        // (s * w + d * (65536 - w) + $8000) >> 16.
+        var bmp = Draw(1, 1, b => b.U16(0x001A).Rgb(0, 0, 0).U16(0x0031).Rect(0, 0, 1, 1)
+            .U16(0x001F).Rgb(0xFFFF, 0x4000, 0x8000).U16(0x001A).Rgb(0xFFFF, 0xFFFF, 0xFFFF)
+            .U16(0x0008).U16(32).U16(0x0031).Rect(0, 0, 1, 1));
+        Assert.Equal(new PictColor(255, 64, 128), bmp[0, 0]);
     }
 
     [Fact]

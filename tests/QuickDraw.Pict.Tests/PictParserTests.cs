@@ -224,7 +224,26 @@ public class PictParserTests
             .Rect(0, 0, 1, 1).Rect(0, 0, 1, 1).U16(0)
             .U8(0).U8(10).U8(20).U8(30)
             .U16(0x00FF).ToArray();
-        Assert.Equal(new PictColor(10, 20, 30), PictReader.Decode(pict)[0, 0]);
+        Assert.Equal(new PictColor(10, 20, 30), PictReader.Decode(pict, new PictDecodeOptions { QuickDraw = PictQuickDraw.MacRom })[0, 0]);
+    }
+
+    [Fact]
+    public void Opcode0x92_OnMacOS9_IsReserved()
+    {
+        // Skipped as a word length + data; the PaintRect after it draws.
+        var pict = PictBuilder.V2(0, 0, 1, 1).U16(0x0092).U16(4).Zeros(4).U16(0x0031).Rect(0, 0, 1, 1).U16(0x00FF).ToArray();
+        Assert.Equal(new PictColor(0, 0, 0), PictReader.Decode(pict)[0, 0]);
+    }
+
+    [Fact]
+    public void PackBits_OnMacOS9_FlagMinus128_IsARunOf129()
+    {
+        // 1-bit BitMap, rowBytes 130: $80 $FF = 129 bytes of $FF, then a literal $00.
+        var pict = PictBuilder.V2(0, 0, 1, 1040).U16(0x0090).U16(130).Rect(0, 0, 1, 1040).Rect(0, 0, 1, 1040)
+            .Rect(0, 0, 1, 1040).U16(0).U8(4).U8(0x80).U8(0xFF).U8(0x00).U8(0x00).Align().U16(0x00FF).ToArray();
+        var bmp = PictReader.Decode(pict);
+        Assert.Equal(new PictColor(0, 0, 0), bmp[1031, 0]);
+        Assert.Equal(new PictColor(255, 255, 255), bmp[1032, 0]);
     }
 
     [Fact]
@@ -260,10 +279,26 @@ public class PictParserTests
             .Rect(0, 0, 1, 4).Rect(0, 0, 1, 4).U16(0)
             .Bytes(0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC).Align()
             .U16(0x00FF).ToArray();
-        var bmp = PictReader.Decode(pict);
+        var bmp = PictReader.Decode(pict, new PictDecodeOptions { QuickDraw = PictQuickDraw.MacRom });
         // Data = 00 12 34 56 | 00 78 9A BC read as 16-bit pixels 0x0012, 0x3456, 0x0078, 0x9ABC.
         Assert.Equal(new PictColor(0, 0, 0x94), bmp[0, 0]);
         Assert.Equal(new PictColor(0x6B, 0x10, 0xB5), bmp[1, 0]);
+    }
+
+    [Fact]
+    public void DirectBits16_PackType0_OnMacOS9_IsWordPackBits()
+    {
+        // rowBytes 8 (4 pixels): count 9, flag 3 = 4 literal words.
+        var pict = PictBuilder.V2(0, 0, 1, 4)
+            .U16(0x009A).U16(0).U16(0xFF).U16(0x8008).Rect(0, 0, 1, 4)
+            .U16(0).U16(0).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0)
+            .U16(16).U16(16).U16(3).U16(5).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .Rect(0, 0, 1, 4).Rect(0, 0, 1, 4).U16(0)
+            .U8(9).U8(3).U16(0x7C00).U16(0x03E0).U16(0x001F).U16(0x7FFF).Align()
+            .U16(0x00FF).ToArray();
+        var bmp = PictReader.Decode(pict);
+        Assert.Equal(new PictColor(255, 0, 0), bmp[0, 0]);
+        Assert.Equal(new PictColor(0, 0, 255), bmp[2, 0]);
     }
 
     [Fact]

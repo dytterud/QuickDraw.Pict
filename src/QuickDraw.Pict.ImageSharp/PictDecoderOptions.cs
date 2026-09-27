@@ -31,5 +31,11 @@ namespace QuickDraw.Pict.ImageSharp
 
         /// <summary>Keeps the alpha channel of 32-bit pixel maps that carry one; see <see cref="PictDecodeOptions.PreserveAlpha"/>.</summary>
         public bool PreserveAlpha { get; init; }
+
+        /// <summary>
+        /// Which Macintosh QuickDraw to reproduce: Mac OS 9's (default) or the classic ROM's; see
+        /// <see cref="PictDecodeOptions.QuickDraw"/>.
+        /// </summary>
+        public PictQuickDraw QuickDraw { get; init; } = PictQuickDraw.MacOS9;
     }
 }

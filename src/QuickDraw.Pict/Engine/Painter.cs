@@ -23,7 +23,8 @@ namespace QuickDraw.Pict
 
             // Hilite through a pattern whose rows are all solid: RgnBlt (a non-rectangular area) hilites the whole area
             // when any row is solid foreground; BitBlt (a rectangle) follows the pattern.
-            if (m == TransferModes.Hilite && !colorPattern && viaStretchBits && !IsRectangle(area) &&
+            // (ROM only: Mac OS 9 hilites through the pattern everywhere.)
+            if (m == TransferModes.Hilite && !colors.MacOS9 && !colorPattern && viaStretchBits && !IsRectangle(area) &&
                 Array.TrueForAll(pattern.Mono, row => row == 0 || row == 0xFF) && Array.IndexOf(pattern.Mono, (byte)0xFF) >= 0)
                 pattern = Pattern.Black;
 
@@ -38,7 +39,7 @@ namespace QuickDraw.Pict
                         {
                             // Pixel patterns in Boolean modes act as pixel values with fore = all ones, back = 0:
                             // copy P, or d | P, xor d ^ P, bic d & ~P (P inverted first for the not modes).
-                            var src = pattern.Rgb ?? PatternPixel(pattern.Pixels!, x + align.h, y);
+                            var src = pattern.Rgb ?? PatternPixel(pattern.Pixels!, x + align.h, y + (colors.MacOS9 ? align.v : 0));
                             if (TransferModes.IsArithmetic(m) || m == TransferModes.Hilite)
                                 write = TransferModes.ApplyColor(m, src, dst, colors, out result);
                             else

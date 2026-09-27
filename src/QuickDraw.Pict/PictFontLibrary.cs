@@ -82,6 +82,15 @@ namespace QuickDraw.Pict
 
         internal FontFamilyRecord? Family(int familyId) => families.TryGetValue(familyId, out var f) ? f : null;
 
+        // The lowest-numbered Roman family (under 0x4000) with a family record, or null.
+        internal int? LowestFamily()
+        {
+            int? lowest = null;
+            foreach (var (id, fond) in families)
+                if (id < 0x4000 && fond.Associations.Length > 0 && (lowest == null || id < lowest)) lowest = id;
+            return lowest;
+        }
+
         internal bool HasFamily(int familyId)
         {
             if (families.TryGetValue(familyId, out var fond) && fond.Associations.Length > 0) return true;

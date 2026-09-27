@@ -45,6 +45,7 @@ namespace QuickDraw.Pict.ImageSharp
                 ImageCodec = new ImageSharpImageCodec(configuration),
                 Resolution = options.Resolution,
                 PreserveAlpha = options.PreserveAlpha,
+                QuickDraw = options.QuickDraw,
             };
             PictBitmap bitmap = Guard(() => PictReader.Decode(stream, pictOptions, cancellationToken));
 

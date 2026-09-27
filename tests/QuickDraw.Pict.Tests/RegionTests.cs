@@ -166,19 +166,19 @@ public class RegionTests
     public void Arc_QuarterIsTheOvalInsideTheWedge()
     {
         var oval = RegionShapes.Oval(new PictRect(0, 0, 20, 20));
-        var arc = RegionShapes.Arc(new PictRect(0, 0, 20, 20), 0, 90);    // 12 o'clock clockwise to 3 o'clock
+        var arc = RegionShapes.Arc(new PictRect(0, 0, 20, 20), 0, 90, false);    // 12 o'clock clockwise to 3 o'clock
         Assert.True(arc.Contains(14, 5));
         Assert.False(arc.Contains(5, 5));
         Assert.False(arc.Contains(14, 14));
         Assert.True(arc.Difference(oval).IsEmpty);
-        Assert.Equal(Area(oval), Area(RegionShapes.Arc(new PictRect(0, 0, 20, 20), 30, 360)));
+        Assert.Equal(Area(oval), Area(RegionShapes.Arc(new PictRect(0, 0, 20, 20), 30, 360, false)));
     }
 
     [Fact]
     public void Arc_NegativeSweepCoversTheSameWedge()
     {
-        var cw = RegionShapes.Arc(new PictRect(0, 0, 20, 20), 0, 90);
-        var ccw = RegionShapes.Arc(new PictRect(0, 0, 20, 20), 90, -90);
+        var cw = RegionShapes.Arc(new PictRect(0, 0, 20, 20), 0, 90, false);
+        var ccw = RegionShapes.Arc(new PictRect(0, 0, 20, 20), 90, -90, false);
         Assert.True(cw.Xor(ccw).IsEmpty);
     }
 

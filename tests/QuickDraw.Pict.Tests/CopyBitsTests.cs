@@ -272,9 +272,32 @@ public class CopyBitsTests
     {
         // 32-bit 2x2 shrunk to 1x1: rows averaged per column, then the two columns: (10+21)/2=15, (15+30)/2=22 ... per component.
         var bmp = Draw(1, 1, b => Direct32(b, 2, 2, (0, 0, 1, 1), 0, 3,
-            (0, 10, 0, 255), (0, 21, 1, 0), (0, 30, 3, 0), (0, 40, 4, 255)));
+            (0, 10, 0, 255), (0, 21, 1, 0), (0, 30, 3, 0), (0, 40, 4, 255)), new PictDecodeOptions { QuickDraw = PictQuickDraw.MacRom });
         // column 0: (10+30)/2 = 20, (0+3)/2 = 1, (255+0)/2 = 127; column 1: (21+40)/2 = 30, (1+4)/2 = 2, (0+255)/2 = 127
         Assert.Equal(new PictColor(25, 1, 127), bmp[0, 0]);
+    }
+
+    [Fact]
+    public void CopyBits_DeepShrink_OnMacOS9_AveragesRounded()
+    {
+        // column 0: (10+30+1)/2 = 20, (0+3+1)/2 = 2, (255+0+1)/2 = 128; column 1: 31, 3, 128; then (20+31+1)/2 = 26 ...
+        var bmp = Draw(1, 1, b => Direct32(b, 2, 2, (0, 0, 1, 1), 0, 3,
+            (0, 10, 0, 255), (0, 21, 1, 0), (0, 30, 3, 0), (0, 40, 4, 255)));
+        Assert.Equal(new PictColor(26, 3, 128), bmp[0, 0]);
+    }
+
+    [Fact]
+    public void RowGroups_OnMacOS9_UseTheirOwnDda()
+    {
+        // 3 -> 4: rows 0, 1, 1, 2 (the ROM: 0, 0, 1, 2); 5 -> 2: {0, 1, 2}, {3, 4} (boundaries floor(2.5 + 0.5), 5).
+        Assert.Equal(new[] { new[] { 0 }, new[] { 1 }, new[] { 1 }, new[] { 2 } }, QuickDraw.Pict.Bits.RowGroupsMacOS9(0, 3, 4, 3));
+        Assert.Equal(new[] { new[] { 0, 1, 2 }, new[] { 3, 4 } }, QuickDraw.Pict.Bits.RowGroupsMacOS9(0, 5, 2, 5));
+    }
+
+    [Fact]
+    public void ColumnGroups_OneAndAHalf_OnMacOS9_IsAabccd()
+    {
+        Assert.Equal(new[] { 0, 0, 1, 2, 2, 3 }, QuickDraw.Pict.Bits.ColumnGroups(4, 6, true).Select(g => g.first).ToArray());
     }
 
     [Fact]

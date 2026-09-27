@@ -3,14 +3,16 @@ using System;
 namespace QuickDraw.Pict
 {
     // The foreground/background/op/hilite colors a transfer mode draws with.
+    // (and which QuickDraw's rounding rules the blitters follow).
     internal readonly struct PortColors
     {
-        public PortColors(PictColor fore, PictColor back, (ushort r, ushort g, ushort b) op, PictColor hilite)
+        public PortColors(PictColor fore, PictColor back, (ushort r, ushort g, ushort b) op, PictColor hilite, bool macOS9)
         {
-            Fore = fore; Back = back; Op = op; Hilite = hilite;
+            Fore = fore; Back = back; Op = op; Hilite = hilite; MacOS9 = macOS9;
         }
         public readonly PictColor Fore, Back, Hilite;
         public readonly (ushort r, ushort g, ushort b) Op;
+        public readonly bool MacOS9;
     }
 
     // QuickDraw transfer modes on a 32-bit direct destination, per Inside Macintosh: Imaging With QuickDraw:
@@ -83,20 +85,26 @@ namespace QuickDraw.Pict
                     return false;
             }
             int wr = Math.Max(1, (int)c.Op.r), wg = Math.Max(1, (int)c.Op.g), wb = Math.Max(1, (int)c.Op.b);
-            bool average = mode == Blend && wr == wg && wg == wb && ((wr + 1) & ~1) == 0x8000;
+            // Mac OS 9 blends rounded, and averages whenever every weight is within $7F80..$807F.
+            bool average = mode == Blend && (c.MacOS9
+                ? Half(wr) && Half(wg) && Half(wb)
+                : wr == wg && wg == wb && ((wr + 1) & ~1) == 0x8000);
             result = new PictColor(
-                Arithmetic(mode, src.R, dst.R, wr, average),
-                Arithmetic(mode, src.G, dst.G, wg, average),
-                Arithmetic(mode, src.B, dst.B, wb, average));
+                Arithmetic(mode, src.R, dst.R, wr, average, c.MacOS9),
+                Arithmetic(mode, src.G, dst.G, wg, average, c.MacOS9),
+                Arithmetic(mode, src.B, dst.B, wb, average, c.MacOS9));
             return true;
         }
 
-        private static byte Arithmetic(int mode, int s, int d, int w, bool average)
+        private static bool Half(int w) => w >= 0x7F80 && w <= 0x807F;
+
+        private static byte Arithmetic(int mode, int s, int d, int w, bool average, bool macOS9)
         {
             int pin = w >> 8;
             switch (mode)
             {
-                case Blend: return (byte)(average ? (s + d) >> 1 : (int)(((long)s * w + (long)d * (65536 - w)) >> 16));
+                case Blend: return (byte)(average ? (s + d) >> 1
+                    : (int)(((long)s * w + (long)d * (65536 - w) + (macOS9 ? 0x8000 : 0)) >> 16));
                 case AddPin: { int r = s + d; return (byte)(r > 255 || r > pin ? pin : r); }
                 case AddOver: return (byte)(s + d);
                 case SubPin: { int r = d - s; return (byte)(r < 0 || r < pin ? pin : r); }

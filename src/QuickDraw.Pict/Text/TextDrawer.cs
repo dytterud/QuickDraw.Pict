@@ -32,6 +32,7 @@ namespace QuickDraw.Pict
         {
             penFrac &= 0xFFFF;
             if (text.Length == 0) return penFrac;
+            if (s.MacOS9 && text.Length == 1 && text[0] == '\r') return penFrac;   // Mac OS 9: a lone CR draws nothing
             var f = s.Font;
 
             int cx = CharExtra(s, charExtra);
@@ -69,7 +70,9 @@ namespace QuickDraw.Pict
             int advance = width;
             if (stretch)
             {
-                advance = (int)((ulong)(uint)width * (ushort)s.Numer.h / (ushort)s.Denom.h);
+                advance = s.MacOS9
+                    ? FixedMath.FixMulHalfUp(width, FixedMath.FixRatio((short)s.Numer.h, (short)s.Denom.h))
+                    : (int)((ulong)(uint)width * (ushort)s.Numer.h / (ushort)s.Denom.h);
                 toRect = new PictRect(penV, penH, penV + s.Numer.v, penH + s.Numer.h);
                 fromRect = new PictRect(penV, penH, penV + s.Denom.v, penH + s.Denom.h);
                 dstRect = PictureMapping.MapRect(textRect, fromRect, toRect);
@@ -79,6 +82,17 @@ namespace QuickDraw.Pict
             // The buffer: whole longs from the long-aligned pixel at or left of textRect, plus one long of slop after
             // it (which bold smears into and the shadow reads back).
             int bufLeft = (short)(textRect.Left & ~31);
+            if (s.MacOS9)
+            {
+                // Mac OS 9 does not clip ink past the final pen position: widen textRect to the glyphs' images.
+                int inkRight = InkRight(s, text, cx, (penH + f.KernMax - bufLeft) << 16 | penFrac);
+                if (bufLeft + inkRight > textRect.Right)
+                {
+                    textRect = new PictRect(textRect.Top, textRect.Left, textRect.Bottom, (short)(bufLeft + inkRight));
+                    if (!stretch) dstRect = textRect;
+                    else dstRect = PictureMapping.MapRect(textRect, fromRect, toRect);
+                }
+            }
             int rowLongs = ((ushort)(textRect.Right - bufLeft) >> 5) + 2;
             int bufWidth = rowLongs * 32, height = f.RectHeight;
             if (height <= 0) return newFrac;
@@ -94,7 +108,7 @@ namespace QuickDraw.Pict
                     charLoc = unchecked(charLoc + s.Widths[' ']);
                     continue;
                 }
-                int step = unchecked(s.Widths[c] + cx);
+                int step = unchecked(s.Widths[c] + (s.MacOS9 && s.Widths[c] == 0 ? 0 : cx));
                 int index = (ushort)(c - f.FirstChar);
                 int ow = index <= (ushort)span ? f.OffsetWidths[index] : -1;
                 if (ow == -1)
@@ -153,12 +167,39 @@ namespace QuickDraw.Pict
             FixedMath.FixMul(FixedMath.FixMul(charExtra, s.Size << 16), FixedMath.FixMul(
                 FixedMath.FixRatio((short)s.InNumer.h, (short)s.InDenom.h), FixedMath.FixRatio((short)s.Denom.h, (short)s.Numer.h)));
 
-        // StdTxMeas's FixTxWid: the widths plus the character extra on everything but spaces (unscaled, Fixed).
+        // StdTxMeas's FixTxWid: the widths plus the character extra on everything but spaces (unscaled, Fixed); Mac
+        // OS 9 adds the extra only to characters with a width.
         public static int Measure(FontSelection s, ReadOnlySpan<byte> text, int charExtra)
         {
             int cx = CharExtra(s, charExtra), width = 0;
-            foreach (byte c in text) width = unchecked(width + s.Widths[c] + (c == ' ' ? 0 : cx));
+            foreach (byte c in text)
+                width = unchecked(width + s.Widths[c] + (c == ' ' || (s.MacOS9 && s.Widths[c] == 0) ? 0 : cx));
             return width;
+        }
+
+        // The right end (buffer pixels) of the glyph images the character loop would place.
+        private static int InkRight(FontSelection s, ReadOnlySpan<byte> text, int cx, int charLoc)
+        {
+            var f = s.Font;
+            int right = 0, span = f.LastChar - f.FirstChar;
+            foreach (byte c in text)
+            {
+                if (c == ' ') { charLoc = unchecked(charLoc + s.Widths[' ']); continue; }
+                int step = unchecked(s.Widths[c] + (s.Widths[c] == 0 ? 0 : cx));
+                int index = (ushort)(c - f.FirstChar);
+                int ow = index <= (ushort)span ? f.OffsetWidths[index] : -1;
+                if (ow == -1)
+                {
+                    index = f.MissingIndex;
+                    ow = f.OffsetWidths[index];
+                    if (ow == -1) continue;
+                }
+                int dstLeft = (short)(((ow >> 8) & 0xFF) + (short)(charLoc >> 16));
+                charLoc = unchecked(charLoc + step);
+                int bits = (short)(f.Locations[index + 1] - f.Locations[index]);
+                if (bits > 0) right = Math.Max(right, dstLeft + bits);
+            }
+            return right;
         }
 
         // StretchBits with the text mode; a masked mode uses the bits themselves as the mask (so only the glyphs'
@@ -180,7 +221,7 @@ namespace QuickDraw.Pict
             var scratch = new PictBitmap(dstRect.Width, dstRect.Height);
             var black = new PictColor(0, 0, 0);
             Bits.CopyBits(scratch, bits, srcRect, new PictRect(0, 0, dstRect.Height, dstRect.Width), TransferModes.SrcCopy,
-                null, false, new PortColors(black, new PictColor(255, 255, 255), default, default), false);
+                null, false, new PortColors(black, new PictColor(255, 255, 255), default, default, false), false);
             var rows = new SortedDictionary<int, List<int>>();
             for (int y = 0; y < scratch.Height; y++)
                 for (int x = 0; x < scratch.Width; x++)

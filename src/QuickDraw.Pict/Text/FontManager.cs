@@ -16,6 +16,7 @@ namespace QuickDraw.Pict
         public int Size;                                   // the requested size (the width table's fSize)
         public (int h, int v) InNumer, InDenom;            // the text scale it was asked for
         public int Ascent, Descent;                        // FMOutput's metrics (bytes; scaled with FScaleDisable)
+        public bool MacOS9;                                // drawn by Mac OS 9's text code
     }
 
     // The Macintosh ROM's Font Manager (FMSwapFont, System 7 bitmap path; screen device, 80 dpi).
@@ -41,6 +42,10 @@ namespace QuickDraw.Pict
     // stretch is then cut to a power of two or three quarters of one (FOutNumer), and the leftover factor (1..2) scales
     // every width after its style extra, and the ascent, descent and leading (ROM $FFCBEE98, $FFCBEBAA, $FFCBE588).
     //
+    // Mac OS 9's Font Manager differs in: the fallback order (application font, the lowest-numbered family, system
+    // font, Geneva); style variants matched against face & $9B; and family width tables walked with the family's own
+    // character range.
+    //
     // Not modelled: TrueType ('sfnt') families (text in them goes to the outline fallback), synthetic color strikes
     // and color NFNTs (1-bit strikes only), non-Roman scripts.
     internal static class FontManager
@@ -53,7 +58,7 @@ namespace QuickDraw.Pict
         private readonly record struct Found(BitmapFont Font, int ActualSize, int Remaining, FontFamilyRecord? Fond);
 
         public static FontSelection? Swap(PictFontLibrary library, int family, int size, int face,
-            (int h, int v) numer, (int h, int v) denom, int spaceExtra, bool fractEnable, bool fScaleDisable)
+            (int h, int v) numer, (int h, int v) denom, int spaceExtra, bool fractEnable, bool fScaleDisable, bool macOS9)
         {
             if (size == 0) size = 12;
             if (size < 0) return null;
@@ -61,28 +66,30 @@ namespace QuickDraw.Pict
             int searchSize = FixedMath.FixRound(FixedMath.FixMul(
                 FixedMath.FixRatio((short)numer.h, (short)denom.h), size << 16));
 
-            foreach (int candidate in Families(library, family))
+            foreach (int candidate in Families(library, family, macOS9))
             {
                 var fond = library.Family(candidate);
                 if (fond != null && fond.Associations.Length > 0)
                 {
-                    var found = FromFamily(library, fond, searchSize, face, fScaleDisable, out bool trueType);
-                    if (found != null) return Build(found.Value, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable);
+                    var found = FromFamily(library, fond, searchSize, face, fScaleDisable, macOS9, out bool trueType);
+                    if (found != null) return Build(found.Value, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable, macOS9);
                     if (trueType) return null;
                 }
                 if (candidate < 0x200 && FromOldFonts(library, candidate, searchSize, face, fScaleDisable) is { } old)
-                    return Build(old, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable);
+                    return Build(old, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable, macOS9);
             }
             return null;
         }
 
         // The family (0 = system font, 1 = application font), then the fallbacks: for script families (0x4000 and
         // up) the system font, else the application font, Geneva and the system font.
-        private static IEnumerable<int> Families(PictFontLibrary library, int family)
+        private static IEnumerable<int> Families(PictFontLibrary library, int family, bool macOS9)
         {
             int mapped = family == 0 ? library.SystemFontId : family == 1 ? library.ApplicationFontId : family;
             var seen = new HashSet<int>();
-            var list = family >= 0x4000
+            var list = macOS9
+                ? new[] { mapped, library.ApplicationFontId, library.LowestFamily() ?? mapped, library.SystemFontId, Geneva }
+                : family >= 0x4000
                 ? new[] { mapped, library.SystemFontId, library.ApplicationFontId }
                 : new[] { mapped, library.ApplicationFontId, Geneva, library.SystemFontId };
             foreach (int f in list)
@@ -90,9 +97,10 @@ namespace QuickDraw.Pict
         }
 
         private static Found? FromFamily(PictFontLibrary library, FontFamilyRecord fond, int searchSize, int face,
-            bool fScaleDisable, out bool trueType)
+            bool fScaleDisable, bool macOS9, out bool trueType)
         {
             trueType = false;
+            int match = macOS9 ? face & 0x9B : face;
             var entries = new List<FontFamilyRecord.Association>();
             foreach (var a in fond.Associations)
                 if ((a.Style & 0xFF00) == 0) entries.Add(a);
@@ -107,8 +115,8 @@ namespace QuickDraw.Pict
                 {
                     if (a.Size != size) continue;
                     int style = a.Style & 0xFF;
-                    if (style == face) { chosen = a; break; }
-                    int score = (style & ~face) != 0 ? -1 : Score(style, VariantScore);
+                    if (style == match) { chosen = a; break; }
+                    int score = (style & ~match) != 0 ? -1 : Score(style, VariantScore);
                     if (score > bestScore) (bestScore, chosen) = (score, a);
                 }
                 if (chosen is not { } entry || library.Strike(entry.FontId) is not { } strike) return null;
@@ -159,11 +167,11 @@ namespace QuickDraw.Pict
         }
 
         private static FontSelection Build(Found found, int size, int face, (int h, int v) numer, (int h, int v) denom,
-            int spaceExtra, bool fractEnable, bool fScaleDisable)
+            int spaceExtra, bool fractEnable, bool fScaleDisable, bool macOS9)
         {
             var f = found.Font;
             int remaining = found.Remaining;
-            var s = new FontSelection { Font = f, CurStyle = remaining, Size = size, InNumer = numer, InDenom = denom };
+            var s = new FontSelection { Font = f, CurStyle = remaining, Size = size, InNumer = numer, InDenom = denom, MacOS9 = macOS9 };
 
             // The style table's byte additions.
             int extra = 0;
@@ -228,8 +236,11 @@ namespace QuickDraw.Pict
             {
                 if (fondWidths != null)
                 {
-                    int word = fond!.WidthWord(fondWidths, index);
-                    if (word == 0xFFFF && index != missing) word = fond.WidthWord(fondWidths, missing);
+                    // Mac OS 9 indexes the table by the family's own range.
+                    int fondMissing = macOS9 ? fond!.LastChar - fond.FirstChar + 1 : missing;
+                    int i = !macOS9 ? index : index == missing ? fondMissing : index + f.FirstChar - fond!.FirstChar;
+                    int word = fond!.WidthWord(fondWidths, i);
+                    if (word == 0xFFFF && i != fondMissing) word = fond.WidthWord(fondWidths, fondMissing);
                     return unchecked((int)((uint)word * (uint)actual << 4));
                 }
                 if (nfntWidths)

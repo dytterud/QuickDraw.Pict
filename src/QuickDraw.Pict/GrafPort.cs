@@ -59,11 +59,13 @@ namespace QuickDraw.Pict
             fromRect = pictureFrame;
             toRect = new PictRect(0, 0, canvas.Height, canvas.Width);
             HiliteColor = options.HiliteColor;
+            macOS9 = options.QuickDraw == PictQuickDraw.MacOS9;
             textNumer = (toRect.Width, toRect.Height);
             textDenom = (fromRect.Width, fromRect.Height);
         }
 
-        private PortColors Colors => new PortColors(ForeColor, BackColor, OpColor, HiliteColor);
+        private PortColors Colors => new PortColors(ForeColor, BackColor, OpColor, HiliteColor, macOS9);
+        private readonly bool macOS9;
 
         // DrawPicture starts the pattern alignment at (0, 0) and the Origin opcode adds its dh, dv to it.
         private (int h, int v) PatternAlign => (patAlignH, patAlignV);
@@ -75,12 +77,15 @@ namespace QuickDraw.Pict
         private Region MapRegion(Region r) => PictureMapping.MapRegion(r, fromRect, toRect);
 
         // Origin opcode: moves the picture frame by (dh, dv) (so later coordinates land dh, dv further up-left),
-        // shifts the pattern alignment by the same amount, and re-maps the clip.
+        // shifts the pattern alignment by the same amount (ROM only; Mac OS 9 leaves it), and re-maps the clip.
         public void Origin(int dh, int dv)
         {
             fromRect = new PictRect(fromRect.Top + dv, fromRect.Left + dh, fromRect.Bottom + dv, fromRect.Right + dh);
-            patAlignH += dh;
-            patAlignV += dv;
+            if (!macOS9)
+            {
+                patAlignH += dh;
+                patAlignV += dv;
+            }
             if (pictureClip != null) clip = MapRegion(pictureClip);
         }
 
@@ -137,7 +142,11 @@ namespace QuickDraw.Pict
         }
 
         public void PnLocHFrac(int fraction) => pendingFrac = fraction & 0xFFFF;
-        public void LineJustify(int interCharacterSpacing) => interCharSpacing = interCharacterSpacing;
+        // (Mac OS 9 skips LineJustify: its character extra stays 0.)
+        public void LineJustify(int interCharacterSpacing)
+        {
+            if (!macOS9) interCharSpacing = interCharacterSpacing;
+        }
         public void GlyphState(bool fractionalWidths, bool scalingDisabled) =>
             (fractEnable, fScaleDisable) = (fractionalWidths, scalingDisabled);
 
@@ -156,8 +165,20 @@ namespace QuickDraw.Pict
             if (pictureRect is { } pr) lastRect = pr;
             var r = MapRect(lastRect);
             if (r.IsEmpty) { Done(); return; }
-            Shape(verb, () => RegionShapes.RoundRect(r, ovalWidth, ovalHeight),
-                () => RegionShapes.FrameRoundRect(r, ovalWidth, ovalHeight, penWidth, penHeight), false);
+            int ow = ovalWidth, oh = ovalHeight;
+            if (macOS9)
+            {
+                // Mac OS 9 clamps the corner to the rect; a zero corner is a plain rect.
+                ow = Math.Clamp(ow, 0, r.Width);
+                oh = Math.Clamp(oh, 0, r.Height);
+                if (ow == 0 || oh == 0)
+                {
+                    Shape(verb, () => RegionShapes.Rect(r), () => RegionShapes.FrameRect(r, penWidth, penHeight), false);
+                    return;
+                }
+            }
+            Shape(verb, () => RegionShapes.RoundRect(r, ow, oh),
+                () => RegionShapes.FrameRoundRect(r, ow, oh, penWidth, penHeight), false);
         }
 
         public void Oval(PictRect? pictureRect, int verb)
@@ -173,8 +194,8 @@ namespace QuickDraw.Pict
             if (pictureRect is { } pr) lastRect = pr;
             var r = MapRect(lastRect);
             if (r.IsEmpty) { Done(); return; }
-            Shape(verb, () => RegionShapes.Arc(r, startAngle, arcAngle),
-                () => RegionShapes.FrameArc(r, startAngle, arcAngle, penWidth, penHeight), false);
+            Shape(verb, () => RegionShapes.Arc(r, startAngle, arcAngle, macOS9),
+                () => RegionShapes.FrameArc(r, startAngle, arcAngle, penWidth, penHeight, macOS9), false);
         }
 
         // Polygons (picture-space points). Framing draws each edge as a line and does not close the polygon.
@@ -207,8 +228,8 @@ namespace QuickDraw.Pict
         private void Shape(int verb, Func<Region> interior, Func<Region> frame, bool viaStretchBits)
         {
             var colors = Colors;
-            // DrawArc (ovals, round rects, arcs) draws nothing with ditherCopy.
-            if (!viaStretchBits && verb <= 1 && (PenMode & TransferModes.DitherCopy) != 0) { Done(); return; }
+            // The ROM's DrawArc (ovals, round rects, arcs) draws nothing with ditherCopy; Mac OS 9 drops the bit.
+            if (!macOS9 && !viaStretchBits && verb <= 1 && (PenMode & TransferModes.DitherCopy) != 0) { Done(); return; }
             switch (verb)
             {
                 case 0: Painter.FillRegion(canvas, frame(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors, viaStretchBits); break;
@@ -328,19 +349,22 @@ namespace QuickDraw.Pict
             if (Version1) (x, y) = MapPoint(textH, textV);
             else
             {
-                int fh = MapFixed(unchecked((textH << 16) | fraction), fromRect.Left, fromRect.Right, toRect.Left, toRect.Right);
-                int fv = MapFixed(unchecked((textV << 16) | 0x8000), fromRect.Top, fromRect.Bottom, toRect.Top, toRect.Bottom);
+                int fh = MapFixed(unchecked((textH << 16) | fraction), fromRect.Left, fromRect.Right, toRect.Left, toRect.Right, macOS9);
+                int fv = MapFixed(unchecked((textV << 16) | 0x8000), fromRect.Top, fromRect.Bottom, toRect.Top, toRect.Bottom, macOS9);
                 (x, y, penFrac) = (fh >> 16, fv >> 16, fh & 0xFFFF);
             }
             if (text.Length == 0) { Done(); return; }
 
             int mode = TextMode;
+            // Mac OS 9 draws grayishTextOr, transparent and ditherCopy text as srcOr.
+            if (macOS9 && (mode == TransferModes.GrayishTextOr || mode == TransferModes.Transparent || mode == TransferModes.DitherCopy))
+                mode = TransferModes.SrcOr;
             var colors = Colors;
             fontNames.TryGetValue(pictureFontId, out var name);
             if (options.Fonts is { } library)
             {
                 var font = FontManager.Swap(library, textFontId, TextSize, TextFace, textNumer, textDenom, SpaceExtra, fractEnable,
-                    fScaleDisable);
+                    fScaleDisable, macOS9);
                 if (font != null)
                 {
                     int charExtra = unchecked(((short)ChExtra << 4) + interCharSpacing);
@@ -362,13 +386,22 @@ namespace QuickDraw.Pict
         }
 
         // MapFixPt on one axis: (c - from) x toSize / fromSize (a truncating 64/32-bit divide) + to, in Fixed; an
-        // axis of equal sizes only moves.
-        private static int MapFixed(int c, int fromLo, int fromHi, int toLo, int toHi)
+        // axis of equal sizes only moves. Mac OS 9 multiplies by the truncated ratio (toSize << 16) / fromSize instead,
+        // rounding half up (so 3 -> 1 maps 3.0 to 0.99998).
+        private static int MapFixed(int c, int fromLo, int fromHi, int toLo, int toHi, bool macOS9)
         {
             int fromSize = unchecked(((short)fromHi << 16) - ((short)fromLo << 16));
             int toSize = unchecked(((short)toHi << 16) - ((short)toLo << 16));
             int d = unchecked(c - ((short)fromLo << 16));
-            if (fromSize != toSize && fromSize != 0) d = unchecked((int)((long)d * toSize / fromSize));
+            if (fromSize != toSize && fromSize != 0)
+            {
+                if (macOS9)
+                {
+                    long ratio = ((long)(short)(toHi - toLo) << 16) / (short)(fromHi - fromLo);
+                    d = FixedMath.FixMulHalfUp(d, (int)Math.Clamp(ratio, int.MinValue, int.MaxValue));
+                }
+                else d = unchecked((int)((long)d * toSize / fromSize));
+            }
             return unchecked(d + ((short)toLo << 16));
         }
 
@@ -391,7 +424,7 @@ namespace QuickDraw.Pict
             if (Distance(grayWide, mid) < Distance(grayWide, bk) / 2 && Distance(grayWide, mid) < Distance(grayWide, fg) / 2)
             {
                 penFrac = TextDrawer.Draw(canvas, font, text, x, y, penFrac, charExtra, TransferModes.SrcOr, clip,
-                    hilitePending, new PortColors(gray, BackColor, OpColor, HiliteColor));
+                    hilitePending, new PortColors(gray, BackColor, OpColor, HiliteColor, macOS9));
                 return;
             }
             int width = (short)(TextDrawer.Measure(font, text, charExtra) >> 16);

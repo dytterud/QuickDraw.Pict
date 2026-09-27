@@ -58,6 +58,7 @@ namespace QuickDraw.Pict
             var canvasRect = options.Resolution == PictResolution.PictureFrame ? info.PictureFrame : bounds;
             var canvas = new PictBitmap(Math.Max(1, canvasRect.Width), Math.Max(1, canvasRect.Height)) { Info = info };
             var port = new GrafPort(canvas, bounds, options);
+            bool macOS9 = options.QuickDraw == PictQuickDraw.MacOS9;
             {
                 PictRect? quickTimeRect = null;           // destination of a QuickTime image drawn by the last opcode
                 while (b.BaseStream.Position < b.BaseStream.Length)
@@ -71,6 +72,7 @@ namespace QuickDraw.Pict
 
                     int op = v1 ? b.ReadByte() : b.ReadU16BE();
                     port.Version1 = v1;
+                    if (macOS9 && (op == 0x0092 || op == 0x0093)) op = 0x0094;   // Mac OS 9: reserved
                     switch (op)
                     {
                         case 0x0011:                        // VersionOp mid-stream: 1 = byte opcodes, 2 = word opcodes
@@ -85,7 +87,7 @@ namespace QuickDraw.Pict
                         case 0x009A:                        // DirectBitsRect
                         case 0x009B:                        // DirectBitsRgn
                         {
-                            var (pm, src, dst, mode, mask) = ReadBits(b, op);
+                            var (pm, src, dst, mode, mask) = ReadBits(b, op, macOS9);
                             if (dst != justDrawnQuickTime) port.CopyBits(pm, src, dst, mode, mask);
                             break;
                         }
@@ -117,7 +119,7 @@ namespace QuickDraw.Pict
                         }
                         case 0x8201:                        // UncompressedQuickTime
                         {
-                            var drawn = UncompressedQuickTime(port, b.ReadExactly((int)b.ReadU32BE()));
+                            var drawn = UncompressedQuickTime(port, b.ReadExactly((int)b.ReadU32BE()), macOS9);
                             if (drawn != null)
                             {
                                 quickTimeRect = drawn;
@@ -126,7 +128,7 @@ namespace QuickDraw.Pict
                             break;
                         }
                         default:
-                            if (!HandleDrawingOpcode(port, b, op))
+                            if (!HandleDrawingOpcode(port, b, op, macOS9))
                                 SkipOperands(b, op);
                             break;
                     }
@@ -155,10 +157,11 @@ namespace QuickDraw.Pict
 
         // A bitmap opcode's operands (0x90-0x93, 0x98-0x9B): the BitMap/PixMap, srcRect, dstRect, mode, the mask
         // region of the Rgn variants (odd opcodes), and the pixel data.
-        private static (PixMap pm, PictRect src, PictRect dst, int mode, Region? mask) ReadBits(BinaryReader b, int op)
+        private static (PixMap pm, PictRect src, PictRect dst, int mode, Region? mask) ReadBits(BinaryReader b, int op,
+            bool macOS9)
         {
             bool direct = (op & 0x0A) == 0x0A || op == 0x0092 || op == 0x0093;
-            var pm = direct ? PixMap.ReadDirectHeader(b) : PixMap.ReadIndexedHeader(b);
+            var pm = direct ? PixMap.ReadDirectHeader(b, macOS9) : PixMap.ReadIndexedHeader(b, macOS9);
             var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: (op & 1) != 0);
             pm.ReadPixData(b);
             return (pm, src, dst, mode, mask);
@@ -167,7 +170,7 @@ namespace QuickDraw.Pict
         // UncompressedQuickTime (0x8201): version, the 3x3 matrix, matte size and rect, the matte (skipped, then
         // word-aligned), then a bitmap opcode with its operands, drawn as QuickTime draws it. Returns where it drew
         // (picture space), or null when the block holds no bitmap opcode.
-        private static PictRect? UncompressedQuickTime(GrafPort port, byte[] block)
+        private static PictRect? UncompressedQuickTime(GrafPort port, byte[] block, bool macOS9)
         {
             using var b = new BinaryReader(new MemoryStream(block));
             try
@@ -181,7 +184,8 @@ namespace QuickDraw.Pict
                 b.BaseStream.Position = (b.BaseStream.Position + matteSize + 1) & ~1L;
                 int op = b.ReadU16BE();
                 if (op < 0x0090 || op > 0x009B || (op > 0x0093 && op < 0x0098)) return null;
-                var (pm, src, dst, mode, mask) = ReadBits(b, op);
+                if (macOS9 && (op == 0x0092 || op == 0x0093)) return null;
+                var (pm, src, dst, mode, mask) = ReadBits(b, op, macOS9);
                 return port.UncompressedQuickTime(pm, src, dst, mode, mask, matrix);
             }
             catch (EndOfStreamException)
@@ -203,7 +207,7 @@ namespace QuickDraw.Pict
         // Applies the drawing and graphics-state opcodes to the port. Returns false if the opcode isn't one we
         // interpret (the caller then consumes its operands via SkipOperands). Shape blocks: rect 0x30, round rect
         // 0x40, oval 0x50, arc 0x60, poly 0x70, region 0x80; + verb, "same" variants at base + 8.
-        private static bool HandleDrawingOpcode(GrafPort port, BinaryReader b, int op)
+        private static bool HandleDrawingOpcode(GrafPort port, BinaryReader b, int op, bool macOS9)
         {
             switch (op)
             {
@@ -211,9 +215,9 @@ namespace QuickDraw.Pict
                 case 0x0002: port.BkPat = Pattern.FromMono(b.ReadExactly(8)); return true;    // BkPat
                 case 0x0009: port.PnPat = Pattern.FromMono(b.ReadExactly(8)); return true;    // PnPat
                 case 0x000A: port.FillPat = Pattern.FromMono(b.ReadExactly(8)); return true;  // FillPat
-                case 0x0012: port.BkPat = Pattern.Read(b); return true;                  // BkPixPat
-                case 0x0013: port.PnPat = Pattern.Read(b); return true;                  // PnPixPat
-                case 0x0014: port.FillPat = Pattern.Read(b); return true;                // FillPixPat
+                case 0x0012: port.BkPat = Pattern.Read(b, macOS9); return true;          // BkPixPat
+                case 0x0013: port.PnPat = Pattern.Read(b, macOS9); return true;          // PnPixPat
+                case 0x0014: port.FillPat = Pattern.Read(b, macOS9); return true;        // FillPixPat
                 case 0x0003: port.TextFont(b.ReadU16BE()); return true;                  // TxFont
                 case 0x0004: port.TextFace = b.ReadByte(); return true;                  // TxFace
                 case 0x0005: port.TextMode = b.ReadU16BE(); return true;                 // TxMode
