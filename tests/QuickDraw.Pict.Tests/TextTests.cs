@@ -163,10 +163,24 @@ public class TextTests
     public void Text_TxRatio_ScalesTheSearchSize()
     {
         // numer 2/1 (x frame 10 / 10): 9 pt asks for 18, the 9 pt strike stretched x2 about the pen (2, 4).
-        var rows = Text("A", width: 10, height: 12, before: b => b.Align().U16(0x0010).Point(2, 2).Point(1, 1));
+        var rows = Text("A", width: 10, height: 12, before: b => b.Align().U16(0x0010).Point(2, 2).Point(1, 1),
+            quickDraw: PictQuickDraw.MacRom);
         Assert.Equal("..####....", rows[0]);
         Assert.Equal("..####....", rows[3]);
         Assert.Equal("..........", rows[4]);
+    }
+
+    [Fact]
+    public void Text_MacOS9_StretchedSrcOrRowsRoundHalfUpAboutThePen()
+    {
+        // Vertical 3/2 (SheepShaver-verified rule): the rect's rows 1..6 map about the pen (v 4) rounding half up to
+        // 0..7, and destination row k takes source row floor(k x 5/7 + 1/2): 0, 1, 1, 2, 3, 4, 4. (The copy modes'
+        // MapRect and centre-sampling DDA would give row 2 = source 2.)
+        var lib = new PictFontLibrary();
+        lib.AddFont(Family * 128 + 9, Build(3, 2, 0, 1, new[] { new Glyph('B', 3, 0, "#.", ".#", "##", "#.", ".#") }));
+        var rows = Text("B", fonts: lib, height: 9, before: b => b.Align().U16(0x0010).Point(3, 1).Point(2, 1));
+        Assert.Equal(new[] { "..#.", "...#", "...#", "..##", "..#.", "...#", "...#", "...." },
+            rows.Take(8).Select(r => r[..4]).ToArray());
     }
 
     [Fact]
@@ -175,7 +189,7 @@ public class TextTests
         // 18 pt from the 9 pt strike: doubled about the pen (2, 8): 'A' (x 2-3, rows 5-7 at 9 pt) covers x 2-5, rows 2-7.
         var pict = PictBuilder.V2(0, 0, 12, 10).U16(0x0003).U16(Family).U16(0x000D).U16(18)
             .U16(0x0028).Point(8, 2).Text("A").Align().U16(0x00FF).ToArray();
-        var bmp = PictReader.Decode(pict, new PictDecodeOptions { Fonts = Library() });
+        var bmp = PictReader.Decode(pict, new PictDecodeOptions { Fonts = Library(), QuickDraw = PictQuickDraw.MacRom });
         for (int y = 0; y < 12; y++)
             for (int x = 0; x < 10; x++)
                 Assert.Equal(y >= 2 && y <= 7 && x >= 2 && x <= 5, bmp[x, y] == new PictColor(0, 0, 0));

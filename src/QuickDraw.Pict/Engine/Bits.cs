@@ -22,7 +22,7 @@ namespace QuickDraw.Pict
     internal static class Bits
     {
         public static void CopyBits(PictBitmap canvas, PixMap src, PictRect srcRect, PictRect dstRect, int mode,
-            Region? mask, bool hilitePending, in PortColors colors, bool preserveAlpha)
+            Region? mask, bool hilitePending, in PortColors colors, bool preserveAlpha, int[]?[]? rowGroups = null)
         {
             if (srcRect.IsEmpty || dstRect.IsEmpty) return;
             var area = Region.FromRect(dstRect).Intersect(Region.FromRect(new PictRect(0, 0, canvas.Height, canvas.Width)));
@@ -33,7 +33,7 @@ namespace QuickDraw.Pict
             int srcTop = srcRect.Top - src.Bounds.Top, srcLeft = srcRect.Left - src.Bounds.Left;
             bool scaled = srcW != dstW || srcH != dstH;
             bool macOS9 = colors.MacOS9;
-            var rows = scaled ? (macOS9 ? RowGroupsMacOS9(srcTop, srcH, dstH, src.Height) : RowGroups(srcTop, srcH, dstH, src.Height)) : null;
+            var rows = rowGroups ?? (scaled ? (macOS9 ? RowGroupsMacOS9(srcTop, srcH, dstH, src.Height) : RowGroups(srcTop, srcH, dstH, src.Height)) : null);
             var cols = scaled ? (macOS9 ? ColumnGroupsMacOS9(srcW, dstW) : src.PixelSize == 1 ? ColumnGroups(srcW, dstW) : DeepColumnGroups(srcW, dstW)) : null;
             bool averagedRows = dstH < srcH;
             if (macOS9 && scaled)
@@ -42,7 +42,7 @@ namespace QuickDraw.Pict
                 // row / column is off by one.
                 var visible = area.Bounds;
                 int n = visible.Top - dstRect.Top;
-                if (rows != null && n > 0 && n < rows.Length && ClippedStart(srcH, dstH, n) is int rowShift)
+                if (rowGroups == null && rows != null && n > 0 && n < rows.Length && ClippedStart(srcH, dstH, n) is int rowShift)
                 {
                     rows = (int[]?[])rows.Clone();
                     var shifted = ShiftGroup(rows[n], rowShift, srcTop, src.Height);
@@ -304,6 +304,31 @@ namespace QuickDraw.Pict
                 else
                 {
                     int next = (int)((2 * (k + 1) * s + d) / (2 * d));
+                    for (int i = previous; i < next; i++) rows.Add(i);
+                    previous = next;
+                }
+                rows.RemoveAll(i => srcTop + i >= bitmapHeight);
+                result[k] = rows.Count == 0 ? null : rows.ConvertAll(i => srcTop + i).ToArray();
+            }
+            return result;
+        }
+
+        // Mac OS 9's rows for stretched srcOr / srcXor / srcBic text: enlarging, destination row k takes source row
+        // floor(k s / d + 1/2); reducing, it merges source rows [b(k - 1), b(k)) with b(k) = ($D000 + (k + 1) x
+        // FixRatio(s, d)) >> 16, b(-1) = 0 (the $D000 phase is fitted to SheepShaver renders, not read from code).
+        internal static int[]?[] TextRowGroupsMacOS9(int srcTop, int srcHeight, int dstHeight, int bitmapHeight)
+        {
+            var result = new int[]?[dstHeight];
+            long s = srcHeight, d = dstHeight, step = (s << 16) / d;
+            int previous = 0;
+            for (int k = 0; k < dstHeight; k++)
+            {
+                var rows = new List<int>();
+                if (dstHeight == srcHeight) rows.Add(k);
+                else if (dstHeight > srcHeight) rows.Add((int)((2 * k * s + d) / (2 * d)));
+                else
+                {
+                    int next = (int)((0xD000 + (k + 1) * step) >> 16);
                     for (int i = previous; i < next; i++) rows.Add(i);
                     previous = next;
                 }

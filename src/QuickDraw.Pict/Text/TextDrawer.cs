@@ -86,6 +86,7 @@ namespace QuickDraw.Pict
             // Scaling: the whole buffer is stretched once from (pen + denom) to (pen + numer).
             bool stretch = s.Numer != s.Denom;
             PictRect fromRect = default, toRect = default, dstRect = textRect;
+            bool textRows = false;
             int advance = width;
             if (stretch)
             {
@@ -95,6 +96,15 @@ namespace QuickDraw.Pict
                 toRect = new PictRect(penV, penH, penV + s.Numer.v, penH + s.Numer.h);
                 fromRect = new PictRect(penV, penH, penV + s.Denom.v, penH + s.Denom.h);
                 dstRect = PictureMapping.MapRect(textRect, fromRect, toRect);
+                if (s.MacOS9 && mode is >= 1 and <= 3)
+                {
+                    // Mac OS 9 maps the rect's rows about the pen rounding half up, not with MapRect.
+                    long twiceDenom = 2L * (ushort)s.Denom.v;
+                    int MapRow(int y) => penV + (int)Math.Floor(
+                        (decimal)((long)(y - penV) * (ushort)s.Numer.v * 2 + (ushort)s.Denom.v) / twiceDenom);
+                    dstRect = new PictRect(MapRow(textRect.Top), dstRect.Left, MapRow(textRect.Bottom), dstRect.Right);
+                    textRows = true;
+                }
             }
             int newFrac = (penFrac + advance) & 0xFFFF;
 
@@ -168,7 +178,7 @@ namespace QuickDraw.Pict
                 return newFrac;
             }
             Blit(canvas, ToPixMap(buffer, bufWidth, height, new PictRect(textRect.Top, bufLeft, textRect.Bottom, textRect.Right)),
-                textRect, dstRect, mode, masked, clip, hilitePending, colors);
+                textRect, dstRect, mode, masked, clip, hilitePending, colors, textRows);
             return newFrac;
         }
 
@@ -296,23 +306,26 @@ namespace QuickDraw.Pict
         // StretchBits with the text mode; a masked mode uses the bits themselves as the mask (so only the glyphs'
         // pixels are touched).
         private static void Blit(PictBitmap canvas, PixMap bits, PictRect srcRect, PictRect dstRect, int mode, bool masked,
-            Region? clip, bool hilitePending, in PortColors colors)
+            Region? clip, bool hilitePending, in PortColors colors, bool textRows = false)
         {
+            var rows = textRows && !dstRect.IsEmpty
+                ? Bits.TextRowGroupsMacOS9(srcRect.Top - bits.Bounds.Top, srcRect.Height, dstRect.Height, bits.Bounds.Height)
+                : null;
             if (masked)
             {
-                var mask = MaskRegion(bits, srcRect, dstRect);
+                var mask = MaskRegion(bits, srcRect, dstRect, colors.MacOS9, rows);
                 clip = clip == null ? mask : clip.Intersect(mask);
             }
-            Bits.CopyBits(canvas, bits, srcRect, dstRect, mode, clip, hilitePending, colors, false);
+            Bits.CopyBits(canvas, bits, srcRect, dstRect, mode, clip, hilitePending, colors, false, rows);
         }
 
-        private static Region MaskRegion(PixMap bits, PictRect srcRect, PictRect dstRect)
+        private static Region MaskRegion(PixMap bits, PictRect srcRect, PictRect dstRect, bool macOS9, int[]?[]? rowGroups)
         {
             if (dstRect.IsEmpty) return Region.Empty;
             var scratch = new PictBitmap(dstRect.Width, dstRect.Height);
             var black = new PictColor(0, 0, 0);
             Bits.CopyBits(scratch, bits, srcRect, new PictRect(0, 0, dstRect.Height, dstRect.Width), TransferModes.SrcCopy,
-                null, false, new PortColors(black, new PictColor(255, 255, 255), default, default, false), false);
+                null, false, new PortColors(black, new PictColor(255, 255, 255), default, default, macOS9), false, rowGroups);
             var rows = new SortedDictionary<int, List<int>>();
             for (int y = 0; y < scratch.Height; y++)
                 for (int x = 0; x < scratch.Width; x++)
