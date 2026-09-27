@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+**QuickDraw.Pict.SkiaSharp** (new)
+- Decode pictures, QTIF files and MacPaint documents to `SKBitmap`/`SKImage` (`PictSkia.Decode`, `DecodeImage`,
+  `DecodeAny`), with the same options as the ImageSharp decoder.
+- Encode `SKBitmap`/`SKPixmap` as PICT (`PictSkia.Encode`, `SaveAsPict`).
+- JPEG, PNG, GIF, WebP and BMP QuickTime images through Skia's codecs; outline-font text fallback through Skia.
+
 ## 0.1.0 — 2026-09-27
 
 First release.

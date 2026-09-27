@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 QuickDraw.Pict decodes and encodes Apple QuickDraw PICT pictures. Its goal is to draw **exactly the pixels a Macintosh
 draws**, so every rendering rule is ground-truthed rather than approximated. The core (`src/QuickDraw.Pict`, .NET 8)
-has no dependencies. `src/QuickDraw.Pict.ImageSharp` is the ImageSharp format plugin on top of it.
+has no dependencies. `src/QuickDraw.Pict.ImageSharp` is the ImageSharp format plugin on top of it, and
+`src/QuickDraw.Pict.SkiaSharp` the SkiaSharp adapter (Skia has no managed-codec registry, so it offers
+`PictSkia.Decode`/`Encode` instead of a format plugin).
 
 ## Commands
 

@@ -7,6 +7,7 @@ exactly the pixels a Macintosh draws.
 |---|---|
 | `QuickDraw.Pict` | Dependency-free core (.NET 8). `PictReader` decodes to an RGBA `PictBitmap`; `PictWriter` writes pictures; `PictHeader` detects pictures and reads their header. |
 | `QuickDraw.Pict.ImageSharp` | [ImageSharp](https://github.com/SixLabors/ImageSharp) format plugin on top of the core: detection, decoding, encoding, `SaveAsPict`. |
+| `QuickDraw.Pict.SkiaSharp` | [SkiaSharp](https://github.com/mono/SkiaSharp) integration: decode to `SKBitmap`/`SKImage`, encode `SKBitmap`/`SKPixmap`, `SaveAsPict`. |
 
 ## ImageSharp
 
@@ -32,6 +33,21 @@ Options go through `PictDecoderOptions` with `PictDecoder.Instance.Decode(...)`:
 JPEG, PNG, GIF, TIFF, WebP and BMP QuickTime images inside pictures are decoded with ImageSharp's own decoders.
 
 ImageSharp has its own licence (the Six Labors Split License); check that it fits your use.
+
+## SkiaSharp
+
+```csharp
+using SKBitmap bitmap = PictSkia.Decode(File.ReadAllBytes("picture.pict"));
+using SKImage image   = PictSkia.DecodeImage(bytes, new PictSkiaOptions { ScreenDepth = 8 });
+SKBitmap? any         = PictSkia.DecodeAny(bytes);          // PICT, QTIF or MacPaint
+bitmap.SaveAsPict("copy.pict");
+```
+
+SkiaSharp has no registry for managed codecs, so this package is an adapter rather than a format plugin: `SKCodec` and
+`SKBitmap.Decode` do not see PICT. `PictSkiaOptions` has the same options as the ImageSharp decoder, with a
+`TypefaceResolver` for the outline-text fallback. JPEG, PNG, GIF, WebP and BMP QuickTime images are decoded with Skia's
+own codecs (Skia has no TIFF decoder). On Linux, add a SkiaSharp native-assets package, such as
+`SkiaSharp.NativeAssets.Linux`.
 
 ## Core
 

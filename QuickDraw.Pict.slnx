@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/QuickDraw.Pict.ImageSharp/QuickDraw.Pict.ImageSharp.csproj" />
     <Project Path="src/QuickDraw.Pict/QuickDraw.Pict.csproj" />
+    <Project Path="src/QuickDraw.Pict.SkiaSharp/QuickDraw.Pict.SkiaSharp.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/QuickDraw.Pict.Tests/QuickDraw.Pict.Tests.csproj" />
