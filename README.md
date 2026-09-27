@@ -67,10 +67,15 @@ ICC profile, as a `.pict` file or a bare picture, splitting images too wide for 
 
 ## Accuracy
 
-Picture playback, shape rasterization, regions, CopyBits scaling and transfer modes, pixel data, the Font Manager and
-the text character generator follow the Macintosh ROM (Mac OS ROM $077D), and match reference implementations of the
-corresponding QuickDraw routines pixel for pixel. The QuickTime codecs match ffmpeg's decoders on real and generated
-samples. Not modelled: TrueType text, color bitmap fonts and the Font Manager's FScaleDisable mode.
+Pictures are drawn as Mac OS 9's QuickDraw draws them (the default), or with
+`QuickDraw = PictQuickDraw.MacRom` as the classic 68k QuickDraw of the Macintosh ROM (Mac OS ROM $077D). Picture
+playback, shape rasterization, regions, CopyBits scaling and transfer modes, pixel data, the Font Manager and the text
+character generator follow the ROM, match reference implementations of the corresponding QuickDraw routines pixel for
+pixel, and carry every documented Mac OS 9 difference. The QuickTime codecs match ffmpeg's decoders on real and generated
+samples. Not modelled: TrueType text and color bitmap fonts.
+
+The format and every rendering rule the library follows are specified in [docs/PICT-FORMAT.md](docs/PICT-FORMAT.md),
+in enough detail to write a compatible decoder and encoder without reading the source.
 
 ## Build
 
