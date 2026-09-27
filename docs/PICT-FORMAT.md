@@ -1685,54 +1685,113 @@ follows the rules below. It still uses the ROM's MapPt, MapRect, ScalePt, FixMul
 
 ### 17.2 Bitmaps
 
-- **Vertical scaling:**
-  - Enlarging: destination row k takes source row `ceil(s(2k + 1) / 2d) − 1`.
-  - Reducing: destination row k merges the source rows between `b(k−1)` and `b(k)`, with
-    `b(k) = floor((k + 1) s / d + ½)` and `b(−1) = 0`.
-  - Exact integer reductions agree with the ROM; odd-height enlargements and other reductions do not. For example,
-    3 → 4 gives rows 0, 1, 1, 2, where the ROM gives 0, 0, 1, 2.
-- **1-bit ×1.5:** abcd → **aabccd**.
-- **16/32-bit merging:** 16-bit components are first widened to 8 bits. Rows and then columns are averaged
-  **rounded**: `(sum + n/2) / n`.
-- **Blend:** `(s·w + d·(65536 − w) + $8000) >> 16`. The exact average `(s + d) >> 1` is used when every weight lies
-  in `$7F80…$807F`.
+- **Scaling:** one DDA for rows **and** columns, at every depth, replacing the ROM's row DDA, column stepper and
+  1-bit special cases:
+  - Enlarging: destination k takes source `ceil(s(2k + 1) / 2d) − 1`.
+  - Reducing: destination k merges the sources between `b(k−1)` and `b(k)`, with `b(k) = floor((k + 1) s / d + ½)`
+    and `b(−1) = 0`.
+  - Exact integer reductions agree with the ROM; other ratios do not. For example, 3 → 4 gives 0, 1, 1, 2 (ROM
+    0, 0, 1, 2), a 1-bit ×1.5 gives aabccd, and 3 → 269 maps column 179 to source 2.
+- **Clipped scaling:** the DDA starts at the first visible row or column n (the top or left of the visible area)
+  without stepping to it. Where its error is exactly 0 there, that one row or column is off:
+  - enlarging, when `s(2n + 1)` is a multiple of `2d`: it takes source `s(2n + 1) / 2d`, one more than unclipped;
+  - reducing, when `2ns` is an odd multiple of `d`: its group starts one source earlier.
+  - Later rows and columns are unchanged.
+- **Merging:** 1–8 bits take the largest index (1 bit: OR). 16/32 bits widen 16-bit components to 8 bits, then
+  average rows and then columns **rounded**: `(sum + n/2) / n`.
+- **Colorizing** applies:
+  - to copy modes when the foreground isn't black or the background isn't white;
+  - to or modes when the foreground isn't black;
+  - to bic modes when the background isn't white;
+  - never to xor modes.
+- **How a colorized pixel is computed:**
+  - 1-bit sources and indexed srcCopy / notSrcCopy work as in the ROM (bitwise).
+  - srcOr, srcBic, notSrcOr and notSrcBic, and colorizing copies of direct sources, **blend each channel**. With s
+    the source channel (8-bit), `C` = fore (or modes) or back (bic modes), and `s := 255 − s` for the not modes:
+    - copy: `((256 − s)·F + (s + 1)·B) >> 8`
+    - notCopy: `((256 − s)·B + (s + 1)·F) >> 8`
+    - or / bic: `((256 − s)·C + (s + 1)·d) >> 8`
+- **Blend:** `(s·w + d·(65536 − w) + $8000) >> 16`. The exact average `(s + d) >> 1` is used when all three
+  weights lie in `$7F80…$807F`; a zero weight counts as 1.
 - **Pattern hilite:** follows the pattern everywhere. There is none of the ROM's whole-area quirk.
 - **Pixel patterns:** use the vertical alignment too, which is always 0, since Origin does not move it.
 
 ### 17.3 Shapes
 
 - **Arc slopes** use a half-up fixed multiply, `(a·b + $8000) >> 16`. This rarely moves an arc edge by one pixel.
+  Every other arc computation is the same as the ROM.
 - **Pen modes:** bit 6 is dropped first (64–79 draw as 0–15), then the same acceptance rule as the ROM applies
   (§8.3).
+- **Frames of ovals, round rects and arcs** have no emptiness or pen-size test:
+  - The inner shape spans rows `[top + penV, bottom − penV)`, with an oval of `max(0, ovalW − 2penH)` by
+    `max(0, ovalH − 2penV)`.
+  - At zero inner width (always when the pen is wider than half the shape), its edges stay fixed at
+    `iL = left + penH` and `iR = right − penH`.
+  - Inner rows draw two slabs, `[oL, iL)` and then `[iR, oR)`, clamped to the rect. When `iL > iR` the slabs
+    overlap and the overlap is painted **twice**: copy modes are unchanged, XOR cancels, and arithmetic modes apply
+    twice. Narrow rows can paint outside the oval.
+  - A zero pen height makes every row an inner row. For example, a 2×8 oval framed with pen (v 0, h 2) paints
+    `[0, 2)` on all 8 rows.
+  - Rows outside the inner span are solid, as in the ROM.
 
 ### 17.4 Text and the Font Manager
 
+- **Size folding:**
+
+  ```
+  if any numer/denom component is 0: numer = denom = (1, 1)
+  take absolute values; if numer.v == denom.v: both 1; if numer.h == denom.h: both 1, no fold
+  r = (numer.h << 16) / denom.h;  p = r·size;  if (p >> 16) < 4: no fold
+  newSize = (p + $8000) >> 16;  f = FixRatio(size, newSize)
+  numer = ((FixMul(f, r) + $80) >> 8, (FixMul(f, (numer.v << 16) / denom.v) + $80) >> 8);  denom = (256, 256)
+  ```
+
+  - The search uses newSize (or the original size, without folding). Size choice is otherwise as in §12.3.
+  - **Stretch:** `D6 = (size << 16) / strikeSize`, then per axis `H = ratio × D6`, a half-up multiply that is
+    skipped when D6 = 1.0. `FOutNumer = H ≤ $7FFF7F ? (H + $80) >> 8 : $7FFF`.
+  - Examples: 9 pt at 4/3 → 12 pt, numer (256, 192); 12 pt at 3/2 → 18, (256, 171); 9 pt at 5/4 → 11, (262, 209).
 - **Font fallback order:** the application font, then the lowest-numbered font family, then the system font, then
   Geneva.
-- **Style variants** are matched against `face & $9B`. Underline, condense and extend variants are ignored when
-  matching, and those styles are synthesized.
+- **Style variants** are matched against `face & $9B`, with the ROM's scores. The synthesized remaining style is
+  the unmasked face minus the entry's style, so underline, condense and extend are always synthesized.
 - **Family width tables** are walked with the family's own character range. The strike's character c takes word
   `c − ffFirstChar`, and the missing symbol takes word `ffLastChar − ffFirstChar + 1`.
-- **Text modes** grayishTextOr (49), transparent (36) and ditherCopy (64) draw as srcOr.
-- **Character extra** is added only to characters with a non-zero width.
-- **A lone carriage return** draws nothing.
-- **Ink past the final pen position is not clipped:** the text rect extends to the right edge of the glyph images.
+- **Text modes:**
+  - transparent (36) and ditherCopy (64) draw as srcOr;
+  - grayishTextOr (49) draws srcOr in the gray GetGray finds (§12.6).
+- **Glyph placement ignores the pen fraction.** With S the running Fixed advance from 0, a glyph goes at
+  `pen.h + ((S + $8000) >> 16) + its offset + kernMax`. The pen still ends at `(pen.h << 16) + fraction + advance`,
+  so PnLocHFrac only moves the end pen.
+- **Italic** pivots on the row just below the baseline (y = pen.v), with `it` = the italic pixels (default 8):
+  - rows above shift right by `((pen.v − y) × it) / 16`;
+  - that row and the rows below shift left by `((y − pen.v + 1) × it) / 16`;
+  - both divides truncate.
+- **Text rect** (ink past the final pen position is not clipped), relative to the pen, starting from the union U of
+  the glyph images and the spaces' origin points:
+  - `W = (advance + $8000) >> 16`
+  - `right = U.right`; if the mode is 0, the mode is above 3, or the text is underlined: `right = max(right, W)`
+  - `right += bold + (italic ? it × (ascent − 1) / 16 − extra : 0) + (shadow ? min(shadow + 1, 4) : 0)`
+  - if `extra > 0`: `right = max(right − extra, W)`
+  - `left = min(U.left − (italic ? it × (descent − 1) / 16 : 0), 0)`
+- **Character extra:**
+  - It is added only to characters that are not spaces and have a width above 0; carriage returns and zero-width
+    characters get none.
+  - It is scaled with half-up multiplies.
+- **A lone carriage return** (a text of exactly one byte 13) draws nothing and leaves the pen. A carriage return
+  inside longer text draws its glyph with advance 0.
 - **Stretched text advances the pen** by `FixMul(width, numer/denom)`, rounded half up.
 
 ### 17.5 Not yet pinned down
 
-These Mac OS 9 differences are known to exist but are not exactly specified yet. QuickDraw.Pict draws them the ROM
-way in both modes:
+These Mac OS 9 differences are known but not yet exactly specified or verified. QuickDraw.Pict draws them the ROM way
+in both modes:
 
-- colorizing with a non-black foreground or non-white background (Mac OS 9 blends each channel linearly);
-- glyph placement that ignores the pen fraction (`pnLoc.h + round(advance)`);
-- the italic pivot on the baseline;
-- font size folding (`round(r × size)` with an 8.8 residual);
-- style-variant scoring;
-- horizontal scaling at large widths;
-- a clipped-enlargement row bug;
-- frames whose inner rect is empty (overlapping slabs);
-- colour bitmap fonts drawn glyph by glyph.
+- **Colour bitmap fonts:** Mac OS 9 draws 2/4/8-bit NFNTs glyph by glyph, in opaque srcCopy, through their `fctb`.
+- **Quirks found by reading code but not reproduced:**
+  - italic rows that need shifts of 32 bits or more (from about 64 rows at the default slant) are corrupted;
+  - a clipped reduction's right-edge span is one column short;
+  - a destination rect past the pixel map's bounds picks its scaling routine from truncated widths.
+- **Stretched text:** how Mac OS 9 places glyphs when it stretches text (each glyph offset times the scale).
 
 Differences that only concern other destinations (dithering, 1-to-8-bit copies, indexed destinations, black-and-white
 ports) or the destination's alpha byte do not apply to a 32-bit RGBA canvas.

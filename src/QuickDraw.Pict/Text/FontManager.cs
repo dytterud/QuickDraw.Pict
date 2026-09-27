@@ -63,8 +63,16 @@ namespace QuickDraw.Pict
             if (size == 0) size = 12;
             if (size < 0) return null;
             face &= 0xFF;
-            int searchSize = FixedMath.FixRound(FixedMath.FixMul(
-                FixedMath.FixRatio((short)numer.h, (short)denom.h), size << 16));
+            // The ROM searches for the size scaled by the horizontal ratio; Mac OS 9 folds the ratio into the size first.
+            int searchSize;
+            var fold = (size, numer, denom);
+            if (macOS9)
+            {
+                fold = Fold(size, numer, denom);
+                searchSize = fold.size;
+            }
+            else
+                searchSize = FixedMath.FixRound(FixedMath.FixMul(FixedMath.FixRatio((short)numer.h, (short)denom.h), size << 16));
 
             foreach (int candidate in Families(library, family, macOS9))
             {
@@ -72,11 +80,11 @@ namespace QuickDraw.Pict
                 if (fond != null && fond.Associations.Length > 0)
                 {
                     var found = FromFamily(library, fond, searchSize, face, fScaleDisable, macOS9, out bool trueType);
-                    if (found != null) return Build(found.Value, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable, macOS9);
+                    if (found != null) return Build(found.Value, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable, macOS9, fold);
                     if (trueType) return null;
                 }
                 if (candidate < 0x200 && FromOldFonts(library, candidate, searchSize, face, fScaleDisable) is { } old)
-                    return Build(old, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable, macOS9);
+                    return Build(old, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable, macOS9, fold);
             }
             return null;
         }
@@ -167,7 +175,8 @@ namespace QuickDraw.Pict
         }
 
         private static FontSelection Build(Found found, int size, int face, (int h, int v) numer, (int h, int v) denom,
-            int spaceExtra, bool fractEnable, bool fScaleDisable, bool macOS9)
+            int spaceExtra, bool fractEnable, bool fScaleDisable, bool macOS9,
+            (int size, (int h, int v) numer, (int h, int v) denom) fold)
         {
             var f = found.Font;
             int remaining = found.Remaining;
@@ -187,7 +196,17 @@ namespace QuickDraw.Pict
             int actual = found.ActualSize & 0x7F;
             int sizeRatio = FixedMath.FixRatio((short)size, (short)actual);
             int Out(int n, int d) => (FixedMath.FixMul(FixedMath.FixRatio((short)n, (short)d), sizeRatio) + 0x80) >> 8;
-            s.Numer = (Out(numer.h, denom.h), Out(numer.v, denom.v));
+            // Mac OS 9: the folded ratio times (folded size << 16) / strike size, multiplied half up, capped at $7FFF.
+            long foldedRatio = actual == 0 ? 0x10000 : ((long)fold.size << 16) / actual;
+            int OutMacOS9(int n, int d)
+            {
+                long ratio = d == 0 ? 0x10000 : ((long)n << 16) / d;
+                long h = foldedRatio == 0x10000 ? ratio : ((ratio * foldedRatio) + 0x8000) >> 16;
+                return h <= 0x7FFF7F ? (int)((h + 0x80) >> 8) : 0x7FFF;
+            }
+            s.Numer = macOS9
+                ? (OutMacOS9(fold.numer.h, fold.denom.h), OutMacOS9(fold.numer.v, fold.denom.v))
+                : (Out(numer.h, denom.h), Out(numer.v, denom.v));
             s.Denom = (0x100, 0x100);
 
             // FScaleDisable: the stretch cut to a power of two (or 3/4 of one), the rest as a Fixed factor.
@@ -288,6 +307,26 @@ namespace QuickDraw.Pict
                 n = (n << 2) / 3;
             }
             return (numer & 0xFFFF, n << 8);
+        }
+
+        // Mac OS 9's scale folding (FM_NormalizeScale / FM_CalcScale): a horizontal ratio r = numer.h / denom.h is
+        // folded into the size, newSize = round(r x size), leaving numer = (r, v ratio) x size / newSize as 8.8 over
+        // 256. No fold when the horizontal ratio is 1 or the scaled size is under 4 points; a zero component resets
+        // the ratio to 1.
+        internal static (int size, (int h, int v) numer, (int h, int v) denom) Fold(int size, (int h, int v) numer, (int h, int v) denom)
+        {
+            if (numer.h == 0 || numer.v == 0 || denom.h == 0 || denom.v == 0) return (size, (1, 1), (1, 1));
+            numer = (Math.Abs(numer.h), Math.Abs(numer.v));
+            denom = (Math.Abs(denom.h), Math.Abs(denom.v));
+            if (numer.v == denom.v) (numer.v, denom.v) = (1, 1);
+            if (numer.h == denom.h) return (size, (1, numer.v), (1, denom.v));
+            int r = (int)(((long)numer.h << 16) / denom.h);
+            int p = unchecked(r * size);
+            if (p >> 16 < 4) return (size, numer, denom);
+            int newSize = (p + 0x8000) >> 16;
+            int f = FixedMath.FixRatio((short)size, (short)newSize);
+            int hF = FixedMath.FixMul(f, r), vF = FixedMath.FixMul(f, (int)(((long)numer.v << 16) / denom.v));
+            return (newSize, ((hF + 0x80) >> 8, (vF + 0x80) >> 8), (256, 256));
         }
 
         // The family width table for a style: the exact one, else the best-scoring subset.

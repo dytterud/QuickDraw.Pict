@@ -82,8 +82,16 @@ public class TextTests
     [Fact]
     public void Text_Italic_SlantsHalfAPixelPerRowAboveTheBottom()
     {
-        var rows = Text("A", face: 2);
+        var rows = Text("A", face: 2, quickDraw: PictQuickDraw.MacRom);
         Assert.Equal(new[] { "....##....", "...##.....", "...##....." }, rows[1..4]);
+    }
+
+    [Fact]
+    public void Text_Italic_OnMacOS9_PivotsOnTheRowBelowTheBaseline()
+    {
+        // Rows above pnLoc.v shift right (rows above x 8) / 16: 3 -> 1, 2 -> 1, 1 -> 0; row pnLoc.v and below shift left.
+        var rows = Text("A", face: 2);
+        Assert.Equal(new[] { "...##.....", "...##.....", "..##......" }, rows[1..4]);
     }
 
     [Fact]
@@ -144,8 +152,11 @@ public class TextTests
         // ChExtra 0xE4 x 9 = 0.501 pixel per character. From the default half pixel the second 'A' lands at
         // 2.5 + 3.501 -> 6; from PnLocHFrac 0x7F00 (0.496) at 5.997 -> 5.
         Action<PictBuilder> extra = b => b.Align().U16(0x0016).U16(0x00E4);
-        Assert.Equal("..##..##..", Text("AA", before: extra)[1]);
-        Assert.Equal("..##.##...", Text("AA", before: b => { extra(b); b.Align().U16(0x0015).U16(0x7F00); })[1]);
+        Assert.Equal("..##..##..", Text("AA", before: extra, quickDraw: PictQuickDraw.MacRom)[1]);
+        Assert.Equal("..##.##...", Text("AA", before: b => { extra(b); b.Align().U16(0x0015).U16(0x7F00); },
+            quickDraw: PictQuickDraw.MacRom)[1]);
+        // Mac OS 9 places glyphs from 1/2 whatever the pen's fraction: PnLocHFrac changes nothing here.
+        Assert.Equal("..##..##..", Text("AA", before: b => { extra(b); b.Align().U16(0x0015).U16(0x7F00); })[1]);
     }
 
     [Fact]
@@ -344,6 +355,23 @@ public class TextTests
     }
 
     [Fact]
+    public void FontManager_OnMacOS9_FoldsTheHorizontalRatioIntoTheSize()
+    {
+        Assert.Equal((12, (256, 192), (256, 256)), FontManager.Fold(9, (4, 1), (3, 1)));
+        Assert.Equal((18, (256, 171), (256, 256)), FontManager.Fold(12, (3, 1), (2, 1)));
+        Assert.Equal((11, (262, 209), (256, 256)), FontManager.Fold(9, (5, 1), (4, 1)));
+        Assert.Equal(12, FontManager.Fold(12, (1, 1), (3, 1)).size);                  // under 4 points: no fold
+        // 9 pt at 4/3 wide: the 12 pt strike, squeezed vertically to 3/4.
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (12, 0, 2)));
+        lib.AddNfnt(1, Font9);
+        lib.AddNfnt(2, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
+        var s = FontManager.Swap(lib, Family, 9, 0, (4, 1), (3, 1), 0, false, false, macOS9: true)!;
+        Assert.Equal(4, s.Font.Ascent);
+        Assert.Equal((256, 192), s.Numer);
+    }
+
+    [Fact]
     public void FixRound_RoundsHalvesAwayFromZeroAndSaturates()
     {
         Assert.Equal(new[] { 1, -1, -2, -1, 0, 32767 },
@@ -395,8 +423,8 @@ public class TextTests
             .U16(0x0028).Point(4, 2).Text("A").Align().U16(0x00FF);
         var bmp = PictReader.Decode(b.ToArray(), new PictDecodeOptions { Fonts = Library(), QuickDraw = PictQuickDraw.MacRom });
         Assert.Equal(new PictColor(0x80, 0x80, 0x80), bmp[2, 1]);
-        // Mac OS 9 draws grayishTextOr as srcOr.
-        Assert.Equal(new PictColor(0, 0, 0), PictReader.Decode(b.ToArray(), new PictDecodeOptions { Fonts = Library() })[2, 1]);
+        // Mac OS 9 too (srcOr in the gray GetGray finds).
+        Assert.Equal(new PictColor(0x80, 0x80, 0x80), PictReader.Decode(b.ToArray(), new PictDecodeOptions { Fonts = Library() })[2, 1]);
     }
 
     [Fact]

@@ -14,9 +14,11 @@ namespace QuickDraw.Pict
     // columns, into the largest index (2-8 bits) or the truncated per-component average (16 and 32 bits). Merging
     // and scaling happen at the source depth, before color conversion.
     //
-    // Mac OS 9's rewrite differs: its vertical DDA takes, for an enlargement, destination row k from source row
-    // ceil(s (2k + 1) / 2d) - 1, and for a reduction groups rows between boundaries floor((k + 1) s / d + 1/2); a 1-bit
-    // x1.5 stretch is aabccd; and 16/32-bit merges promote to 8-bit components and average rounded.
+    // Mac OS 9's rewrite differs: one DDA for rows and columns at every depth takes, for an enlargement,
+    // destination k from source ceil(s (2k + 1) / 2d) - 1, and for a reduction merges sources between boundaries
+    // floor((k + 1) s / d + 1/2) (so a 1-bit x1.5 stretch is aabccd); a clip starting where that error is exactly 0
+    // shifts its first row/column by one; 16/32-bit merges promote to 8-bit components and average rounded; and
+    // colorizing through srcOr/srcBic (or any colorizing copy of a direct source) blends each channel linearly.
     internal static class Bits
     {
         public static void CopyBits(PictBitmap canvas, PixMap src, PictRect srcRect, PictRect dstRect, int mode,
@@ -32,8 +34,27 @@ namespace QuickDraw.Pict
             bool scaled = srcW != dstW || srcH != dstH;
             bool macOS9 = colors.MacOS9;
             var rows = scaled ? (macOS9 ? RowGroupsMacOS9(srcTop, srcH, dstH, src.Height) : RowGroups(srcTop, srcH, dstH, src.Height)) : null;
-            var cols = scaled ? (src.PixelSize == 1 ? ColumnGroups(srcW, dstW, macOS9) : DeepColumnGroups(srcW, dstW)) : null;
+            var cols = scaled ? (macOS9 ? ColumnGroupsMacOS9(srcW, dstW) : src.PixelSize == 1 ? ColumnGroups(srcW, dstW) : DeepColumnGroups(srcW, dstW)) : null;
             bool averagedRows = dstH < srcH;
+            if (macOS9 && scaled)
+            {
+                // DDAInit jumps straight to the first visible row / column; where its error is exactly 0 there, that
+                // row / column is off by one.
+                var visible = area.Bounds;
+                int n = visible.Top - dstRect.Top;
+                if (rows != null && n > 0 && n < rows.Length && ClippedStart(srcH, dstH, n) is int rowShift)
+                {
+                    rows = (int[]?[])rows.Clone();
+                    var shifted = ShiftGroup(rows[n], rowShift, srcTop, src.Height);
+                    rows[n] = shifted;
+                }
+                n = visible.Left - dstRect.Left;
+                if (cols != null && n > 0 && n < cols.Length && ClippedStart(srcW, dstW, n) is int colShift)
+                {
+                    cols = ((int first, int end)[])cols.Clone();
+                    cols[n] = colShift > 0 ? (cols[n].first + 1, cols[n].end + 1) : (cols[n].first - 1, cols[n].end);
+                }
+            }
 
             mode &= ~TransferModes.DitherCopy;
             bool bilevel = src.PixelSize == 1 && IsBlackAndWhite(src.Palette);
@@ -60,19 +81,19 @@ namespace QuickDraw.Pict
                             if (bilevel)
                                 write = TransferModes.ApplyBit(TransferModes.Normalize(mode, hilitePending), bit, dst, colors, out result);
                             else
-                                write = ApplyColorSource(mode, hilitePending, src.Palette[bit ? 1 : 0], dst, colors, out result);
+                                write = ApplyColorSource(mode, hilitePending, src.Palette[bit ? 1 : 0], dst, colors, false, out result);
                         }
                         else if (!scaled)
                         {
                             int sy = group[0], sx = srcLeft + first;
                             if (sy < 0 || sy >= src.Height || sx < 0 || sx >= src.Width) continue;
-                            write = ApplyColorSource(mode, hilitePending, src.GetPixel(sx, sy), dst, colors, out result);
+                            write = ApplyColorSource(mode, hilitePending, src.GetPixel(sx, sy), dst, colors, src.IsDirect, out result);
                             if (keepAlpha) alpha = src.GetAlpha(sx, sy);
                         }
                         else
                         {
                             if (!TryDeep(src, group, srcLeft, first, end, macOS9, out var color, out bool averaged, out byte a)) continue;
-                            write = ApplyColorSource(mode, hilitePending, color, dst, colors, out result);
+                            write = ApplyColorSource(mode, hilitePending, color, dst, colors, src.IsDirect, out result);
                             if (keepAlpha) alpha = averaged || averagedRows ? (byte)0 : a;
                         }
                         if (write) Painter.WritePixel(canvas, x, y, result, alpha);
@@ -166,15 +187,72 @@ namespace QuickDraw.Pict
 
         private static byte Expand5(int c) => (byte)((c << 3) | (c >> 2));
 
-        // A full-color source pixel through the mode (TransferModes.ApplyBoolean / ApplyColor).
+        // A full-color source pixel through the mode (TransferModes.ApplyBoolean / ApplyColor). Mac OS 9 colorizes
+        // srcOr / srcBic / notSrcOr / notSrcBic sources, and copies of direct sources, by a per-channel blend.
         private static bool ApplyColorSource(int mode, bool hilitePending, PictColor s, PictColor d, in PortColors c,
-            out PictColor result)
+            bool direct, out PictColor result)
         {
             int m = TransferModes.Normalize(mode, hilitePending);
             if (m >= TransferModes.Blend)
                 return TransferModes.ApplyColor(m, s, d, c, out result);
+            if (c.MacOS9 && TransferModes.ColorizeBlend(m, s, d, c, direct) is PictColor blended)
+            {
+                result = blended;
+                return true;
+            }
             result = TransferModes.ApplyBoolean(m, s, d, c);
             return true;
+        }
+
+        // Mac OS 9's clipped-DDA quirk at the first visible index n: +1 when enlarging and s (2n + 1) is a multiple of
+        // 2d (the enlarged row takes the next source); -1 when reducing and 2ns is an odd multiple of d (the group starts
+        // one source early). Null otherwise.
+        private static int? ClippedStart(int s, int d, int n)
+        {
+            if (d > s) return (long)s * (2 * n + 1) % (2L * d) == 0 ? 1 : null;
+            if (d < s)
+            {
+                long t = 2L * n * s;
+                return t % d == 0 && (t / d & 1) == 1 ? -1 : null;
+            }
+            return null;
+        }
+
+        private static int[]? ShiftGroup(int[]? group, int shift, int srcTop, int bitmapHeight)
+        {
+            if (group == null || group.Length == 0) return group;
+            if (shift > 0)
+            {
+                int row = group[0] + 1;
+                return row < bitmapHeight ? new[] { row } : group;
+            }
+            var list = new List<int> { group[0] - 1 };
+            list.AddRange(group);
+            return list.ToArray();
+        }
+
+        // Mac OS 9's column DDA (the same as its row DDA, for every depth).
+        internal static (int first, int end)[] ColumnGroupsMacOS9(int srcWidth, int dstWidth)
+        {
+            var result = new (int first, int end)[dstWidth];
+            long s = srcWidth, d = dstWidth;
+            int previous = 0;
+            for (int k = 0; k < dstWidth; k++)
+            {
+                if (dstWidth == srcWidth) result[k] = (k, k + 1);
+                else if (dstWidth > srcWidth)
+                {
+                    int i = (int)((s * (2 * k + 1) + 2 * d - 1) / (2 * d)) - 1;
+                    result[k] = (i, i + 1);
+                }
+                else
+                {
+                    int next = (int)((2 * (k + 1) * s + d) / (2 * d));
+                    result[k] = (previous, next);
+                    previous = next;
+                }
+            }
+            return result;
         }
 
         // ---- StretchBits geometry ----

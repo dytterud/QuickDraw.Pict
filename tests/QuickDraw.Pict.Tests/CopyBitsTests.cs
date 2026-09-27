@@ -295,6 +295,32 @@ public class CopyBitsTests
     }
 
     [Fact]
+    public void ColumnGroups_OnMacOS9_UseTheRowDda()
+    {
+        // The harness's 3 -> 269: column 179 takes source 2; 191 -> 83 shrinks by rounded boundaries.
+        Assert.Equal(2, QuickDraw.Pict.Bits.ColumnGroupsMacOS9(3, 269)[179].first);
+        var shrink = QuickDraw.Pict.Bits.ColumnGroupsMacOS9(191, 83);
+        Assert.Equal((0, 2), shrink[0]);
+        Assert.Equal(191, shrink[82].end);
+    }
+
+    [Fact]
+    public void CopyBits_ColorizingSrcOr_OnMacOS9_BlendsEachChannel()
+    {
+        // 8-bit source index 1 = (64, 128, 192) srcOr over white with fore red: ((256 - s) C + (s + 1) d) >> 8.
+        var pict = PictBuilder.V2(0, 0, 1, 1).U16(0x001A).Rgb(0xFFFF, 0, 0)
+            .U16(0x0090).U16(0x8002).Rect(0, 0, 1, 1)
+            .U16(0).U16(0).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0).U16(0).U16(8).U16(1).U16(8).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .U16(0).U16(0).U16(0).U16(1).U16(0).Rgb(0, 0, 0).U16(1).Rgb(0x4000, 0x8000, 0xC000)
+            .Rect(0, 0, 1, 1).Rect(0, 0, 1, 1).U16(1).U8(1).U8(0).U16(0x00FF).ToArray();
+        int C(int s, int c, int d) => ((256 - s) * c + (s + 1) * d) >> 8;
+        Assert.Equal(new PictColor((byte)C(64, 255, 255), (byte)C(128, 0, 255), (byte)C(192, 0, 255)), PictReader.Decode(pict)[0, 0]);
+        // The ROM's is bitwise: (~s & F) | (s & d).
+        Assert.Equal(new PictColor(255, 128, 192),
+            PictReader.Decode(pict, new PictDecodeOptions { QuickDraw = PictQuickDraw.MacRom })[0, 0]);
+    }
+
+    [Fact]
     public void ColumnGroups_OneAndAHalf_OnMacOS9_IsAabccd()
     {
         Assert.Equal(new[] { 0, 0, 1, 2, 2, 3 }, QuickDraw.Pict.Bits.ColumnGroups(4, 6, true).Select(g => g.first).ToArray());

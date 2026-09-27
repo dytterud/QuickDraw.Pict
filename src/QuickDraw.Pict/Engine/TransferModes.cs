@@ -137,6 +137,32 @@ namespace QuickDraw.Pict
             return new PictColor((byte)(r >> 16), (byte)(r >> 8), (byte)r);
         }
 
+        // Mac OS 9's colorizing blend, or null where it does not apply. Colorizing happens for copy modes when fore is not
+        // black or back not white, for or modes when fore is not black, for bic modes when back is not white (never
+        // for xor). An indexed srcCopy / notSrcCopy stays bitwise (ApplyBoolean); every other colorizing case blends
+        // each channel s with weights 256 - s and s + 1:
+        //   copy (direct sources) ((256 - s) F + (s + 1) B) >> 8        notCopy ((256 - s) B + (s + 1) F) >> 8
+        //   or / bic              ((256 - s) C + (s + 1) d) >> 8        with C = F (or) or B (bic), s = 255 - s for not
+        public static PictColor? ColorizeBlend(int mode, PictColor src, PictColor dst, in PortColors c, bool directSource)
+        {
+            int op = mode & 3;
+            bool not = (mode & 4) != 0;
+            bool foreBlack = SameRgb(c.Fore, new PictColor(0, 0, 0)), backWhite = SameRgb(c.Back, new PictColor(255, 255, 255));
+            bool colorize = op switch { 0 => !foreBlack || !backWhite, 1 => !foreBlack, 3 => !backWhite, _ => false };
+            if (!colorize || (op == 0 && !directSource)) return null;
+            var fore = c.Fore;
+            var back = c.Back;
+            byte Channel(int s, int f, int b, int d)
+            {
+                if (op == 0) return (byte)(not ? ((256 - s) * b + (s + 1) * f) >> 8 : ((256 - s) * f + (s + 1) * b) >> 8);
+                int color = op == 1 ? f : b;
+                if (not) s = 255 - s;
+                return (byte)(((256 - s) * color + (s + 1) * d) >> 8);
+            }
+            return new PictColor(Channel(src.R, fore.R, back.R, dst.R), Channel(src.G, fore.G, back.G, dst.G),
+                Channel(src.B, fore.B, back.B, dst.B));
+        }
+
         private static int Rgb(PictColor c) => (c.R << 16) | (c.G << 8) | c.B;
 
         public static PictColor Invert(PictColor c) => new PictColor((byte)(255 - c.R), (byte)(255 - c.G), (byte)(255 - c.B));

@@ -28,6 +28,20 @@ namespace QuickDraw.Pict
         public static Region FrameOval(PictRect r, int penH, int penV) =>
             Curve(r, r.Width, r.Height, true, penH, penV, 0, 360);
 
+        // Frames as Mac OS 9 paints them: one region, or two when the pen leaves the inner shape horizontally empty
+        // (its left and right slabs, painted one after the other, so XOR cancels where they overlap).
+        public static Region[] FrameOvalParts(PictRect r, int penH, int penV, bool macOS9) =>
+            macOS9 ? CurveParts(r, r.Width, r.Height, true, penH, penV, 0, 360, true)
+                   : new[] { FrameOval(r, penH, penV) };
+
+        public static Region[] FrameRoundRectParts(PictRect r, int ovalWidth, int ovalHeight, int penH, int penV, bool macOS9) =>
+            macOS9 ? CurveParts(r, ovalWidth, ovalHeight, true, penH, penV, 0, 360, true)
+                   : new[] { FrameRoundRect(r, ovalWidth, ovalHeight, penH, penV) };
+
+        public static Region[] FrameArcParts(PictRect r, int startAngle, int arcAngle, int penH, int penV, bool macOS9) =>
+            macOS9 ? CurveParts(r, r.Width, r.Height, true, penH, penV, startAngle, arcAngle, true)
+                   : new[] { FrameArc(r, startAngle, arcAngle, penH, penV, false) };
+
         public static Region RoundRect(PictRect r, int ovalWidth, int ovalHeight) =>
             Curve(r, ovalWidth, ovalHeight, false, 0, 0, 0, 360);
 
@@ -56,8 +70,16 @@ namespace QuickDraw.Pict
             public int Left => (short)(left >> 16);
             public int Right => (short)(right >> 16);
 
+            private bool fixedEdges;
+
             // An ellipse with no scan lines (a hollow shape whose pen fills it).
             public static EllipseEdges None() => new EllipseEdges { Top = short.MaxValue };
+
+            // Mac OS 9's inner shape of zero width: constant edges over its rows.
+            public static EllipseEdges Fixed(int top, int left, int bottom, int right) => new EllipseEdges
+            {
+                Top = top, Bottom = bottom, left = left << 16, right = right << 16, fixedEdges = true,
+            };
 
             private EllipseEdges() { }
 
@@ -79,7 +101,7 @@ namespace QuickDraw.Pict
 
             public void Step(int row)
             {
-                if (row < Top || row >= Bottom) return;
+                if (fixedEdges || row < Top || row >= Bottom) return;
                 int y = oddY;
                 oddY = (short)(oddY + 2);
                 while ((int)(sum >> 32) < target)
@@ -109,8 +131,19 @@ namespace QuickDraw.Pict
         private static Region Curve(PictRect r, int ovalWidth, int ovalHeight, bool hollow, int penH, int penV,
             int startAngle, int arcAngle, bool macOS9 = false)
         {
-            if (r.IsEmpty || arcAngle == 0) return Region.Empty;
+            var parts = CurveParts(r, ovalWidth, ovalHeight, hollow, penH, penV, startAngle, arcAngle, macOS9);
+            return parts.Length == 1 ? parts[0] : parts[0].Union(parts[1]);
+        }
+
+        // macOS9 hollow shapes: no emptiness test; the inner shape spans rows [top + penV, bottom - penV) with an oval
+        // of max(0, ovalWidth - 2 penH) x max(0, ovalHeight - 2 penV); at zero width its edges stay at left + penH and
+        // right - penH (crossing when the pen is wider than half the shape), and the right slab is its own part.
+        private static Region[] CurveParts(PictRect r, int ovalWidth, int ovalHeight, bool hollow, int penH, int penV,
+            int startAngle, int arcAngle, bool macOS9)
+        {
+            if (r.IsEmpty || arcAngle == 0) return new[] { Region.Empty };
             var rows = new Scanlines(r.Left, r.Right);
+            Scanlines? rightSlabs = null;
             int top = r.Top, left = r.Left, bottom = r.Bottom, right = r.Right;
 
             // Wedge state: each ray is a line (16.16 h at the current row) stepping by its slope per row; a side is
@@ -147,9 +180,24 @@ namespace QuickDraw.Pict
 
             var outer = new EllipseEdges(top, left, bottom, right, ovalWidth, ovalHeight);
             var inner = EllipseEdges.None();
-            if (hollow && left + penH < right - penH && top + penV < bottom - penV)
+            if (hollow && macOS9)
+            {
+                int iTop = top + penV, iBottom = bottom - penV, iLeft = left + penH, iRight = right - penH;
+                if (iTop < iBottom)
+                {
+                    if (iLeft >= iRight || ovalWidth - 2 * penH <= 0)
+                    {
+                        inner = EllipseEdges.Fixed(iTop, iLeft, iBottom, iRight);
+                        if (iLeft > iRight) rightSlabs = new Scanlines(r.Left, r.Right);
+                    }
+                    else
+                        inner = new EllipseEdges(iTop, iLeft, iBottom, iRight, ovalWidth - 2 * penH, Math.Max(0, ovalHeight - 2 * penV));
+                }
+            }
+            else if (hollow && left + penH < right - penH && top + penV < bottom - penV)
                 inner = new EllipseEdges(top + penV, left + penH, bottom - penV, right - penH,
                     ovalWidth - 2 * penH, ovalHeight - 2 * penV);
+            var second = rightSlabs ?? rows;
 
             // Round rects hold their edges still between the corner ovals' halves.
             int holdTop = (short)((short)ovalHeight >> 1) + top;
@@ -184,25 +232,25 @@ namespace QuickDraw.Pict
                         if (innerRow)
                         {
                             rows.Add(row, outer.Left, inner.Left);
-                            rows.Add(row, inner.Right, outer.Right);
+                            second.Add(row, inner.Right, outer.Right);
                         }
                         else
                             rows.Add(row, outer.Left, outer.Right);
                     }
                     else
-                        ArcRow(rows, row, outer, inner, innerRow, (short)(ray1 >> 16), (short)(ray2 >> 16),
+                        ArcRow(rows, second, row, outer, inner, innerRow, (short)(ray1 >> 16), (short)(ray2 >> 16),
                             flag1 < 0, flag2 < 0, (short)(flag1 & flag2) < 0 && arcAngle > 180);
                 }
 
                 ray1 += slope1;
                 ray2 += slope2;
             }
-            return rows.ToRegion();
+            return rightSlabs == null ? new[] { rows.ToRegion() } : new[] { rows.ToRegion(), rightSlabs.ToRegion() };
         }
 
         // One scan line of an arc: the ellipse's run(s) with the left side cut at ray 1 and the right side at ray 2
         // when their clips are active. When the cuts cross, a wedge over 180 degrees keeps both outer pieces instead.
-        private static void ArcRow(Scanlines rows, int row, EllipseEdges outer, EllipseEdges inner, bool innerRow,
+        private static void ArcRow(Scanlines rows, Scanlines second, int row, EllipseEdges outer, EllipseEdges inner, bool innerRow,
             int ray1, int ray2, bool clip1, bool clip2, bool reflex)
         {
             int outerLeft = outer.Left, outerRight = outer.Right;
@@ -215,7 +263,7 @@ namespace QuickDraw.Pict
                 if (cutLeft < cutRight)
                 {
                     rows.Add(row, cutLeft, innerLeft);
-                    rows.Add(row, innerRight, cutRight);
+                    second.Add(row, innerRight, cutRight);
                 }
                 else if (reflex)
                 {

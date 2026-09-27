@@ -128,6 +128,18 @@ public class DrawingTests
     }
 
     [Fact]
+    public void FrameOval_WithAPenWiderThanHalf_OnMacOS9_PaintsBothSlabs()
+    {
+        // 2 x 8 oval, pen (v 0, h 2): every row is [0, 2) twice (copy: drawn; xor: cancelled); the ROM paints the oval.
+        var copy = Draw(2, 8, b => b.U16(0x0007).Point(0, 2).U16(0x0050).Rect(0, 0, 8, 2));
+        Assert.All(Picture(copy), row => Assert.Equal("##", row));
+        // Under patXor the overlap cancels (back to the white background) except rows 0 and 7, whose slabs don't
+        // overlap - as the Mac OS 9 harness shows.
+        var xor = Draw(2, 8, b => b.U16(0x0007).Point(0, 2).U16(0x0008).U16(10).U16(0x0050).Rect(0, 0, 8, 2));
+        Assert.Equal(new[] { "##", "ww", "ww", "ww", "ww", "ww", "ww", "##" }, Picture(xor));
+    }
+
+    [Fact]
     public void PenMode_PatOr_OnlyDrawsPatternOnes()
     {
         // pen pattern: left column only; patOr leaves the pattern's 0 bits untouched.
