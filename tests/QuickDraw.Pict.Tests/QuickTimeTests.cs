@@ -43,6 +43,40 @@ public class QuickTimeTests
     private static byte[] Raw32(params PictColor[] pixels) =>
         pixels.SelectMany(c => new byte[] { 0, c.R, c.G, c.B }).ToArray();
 
+    // An UncompressedQuickTime block: version, matrix (a, d as given; w = 1.0 in 2.30), no matte, then a 16 x 1
+    // BitsRect (rowBytes 2, unpacked) with pixels ####........####.
+    private static byte[] Uncompressed(int a, int d) => new PictBuilder().U16(0)
+        .U16(a).U16(0).Zeros(4).Zeros(4)                         // a, b, u
+        .Zeros(4).U16(d).U16(0).Zeros(4)                         // c, d, v
+        .Zeros(4).Zeros(4).U16(0x4000).U16(0)                    // h, v, w
+        .Zeros(4).Rect(0, 0, 0, 0)                               // matte size, rect
+        .U16(0x0098).U16(2).Rect(0, 0, 1, 16).Rect(0, 0, 1, 16).Rect(0, 0, 1, 16).U16(0).U8(0xF0).U8(0x0F)
+        .ToArray();
+
+    [Fact]
+    public void UncompressedQuickTime_DrawsItsBitmapOpcodeAndSkipsTheFallback()
+    {
+        var block = Uncompressed(1, 1);
+        var pict = PictBuilder.V2(0, 0, 1, 16).U16(0x8201).U16(0).U16(block.Length).Bytes(block).Align()
+            .U16(0x0007).U16(0x00AE).U16(10).U16(0x0031).Rect(0, 0, 1, 16)    // fallback: PaintRect, skipped
+            .U16(0x00FF).ToArray();
+        var bmp = PictReader.Decode(pict);
+        Assert.Equal("####wwwwwwww####", string.Concat(Enumerable.Range(0, 16).Select(x =>
+            bmp[x, 0] == new PictColor(0, 0, 0) ? '#' : bmp[x, 0] == new PictColor(255, 255, 255) ? 'w' : '?')));
+    }
+
+    [Fact]
+    public void UncompressedQuickTime_WithAScalingMatrix_PlacesTheImageWhereTheMatrixPutsIt()
+    {
+        var block = Uncompressed(2, 1);
+        var pict = PictBuilder.V2(0, 0, 1, 32).U16(0x8201).U16(0).U16(block.Length).Bytes(block).Align()
+            .U16(0x00FF).ToArray();
+        var bmp = PictReader.Decode(pict);
+        Assert.Equal(new PictColor(0, 0, 0), bmp[7, 0]);
+        Assert.Equal(new PictColor(255, 255, 255), bmp[8, 0]);
+        Assert.Equal(new PictColor(0, 0, 0), bmp[24, 0]);
+    }
+
     [Fact]
     public void CompressedQuickTime_Raw32_IsDrawnWhereTheMatrixPutsIt()
     {

@@ -78,15 +78,18 @@ namespace QuickDraw.Pict
 
         // Where the matrix puts the source rect, in picture coordinates (scale and translation; a rotated or skewed
         // image is placed in its bounding box).
-        public PictRect DestinationRect()
+        public PictRect DestinationRect() => Place(Matrix, SourceRect);
+
+        // The bounding box of a rect's corners mapped through a QuickTime matrix (h' = x a + y c + h, v' = x b + y d +
+        // v, rounded).
+        public static PictRect Place(int[] matrix, PictRect r)
         {
             (int h, int v) Map(int x, int y)
             {
-                long h = (long)x * Matrix[0] + (long)y * Matrix[3] + Matrix[6];
-                long v = (long)x * Matrix[1] + (long)y * Matrix[4] + Matrix[7];
+                long h = (long)x * matrix[0] + (long)y * matrix[3] + matrix[6];
+                long v = (long)x * matrix[1] + (long)y * matrix[4] + matrix[7];
                 return ((int)((h + 0x8000) >> 16), (int)((v + 0x8000) >> 16));
             }
-            var r = SourceRect;
             var a = Map(r.Left, r.Top);
             var b = Map(r.Right, r.Bottom);
             var c = Map(r.Right, r.Top);

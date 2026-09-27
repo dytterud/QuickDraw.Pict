@@ -80,21 +80,12 @@ namespace QuickDraw.Pict
                         case 0x0091:                        // BitsRgn
                         case 0x0098:                        // PackBitsRect
                         case 0x0099:                        // PackBitsRgn
-                        {
-                            var pm = PixMap.ReadIndexedHeader(b);
-                            var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: (op & 0x01) != 0);
-                            pm.ReadPixData(b);
-                            if (dst != justDrawnQuickTime) port.CopyBits(pm, src, dst, mode, mask);
-                            break;
-                        }
                         case 0x0092:                        // the ROM treats 0x92/0x93 as 0x9A/0x9B
                         case 0x0093:
                         case 0x009A:                        // DirectBitsRect
                         case 0x009B:                        // DirectBitsRgn
                         {
-                            var pm = PixMap.ReadDirectHeader(b);
-                            var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: (op & 1) != 0);
-                            pm.ReadPixData(b);
+                            var (pm, src, dst, mode, mask) = ReadBits(b, op);
                             if (dst != justDrawnQuickTime) port.CopyBits(pm, src, dst, mode, mask);
                             break;
                         }
@@ -117,6 +108,16 @@ namespace QuickDraw.Pict
                             // into the same rectangle (Photoshop's "QuickTime PICT" placeholder).
                             var block = b.ReadExactly((int)b.ReadU32BE());
                             var drawn = port.QuickTime(block);
+                            if (drawn != null)
+                            {
+                                quickTimeRect = drawn;
+                                SkipQuickTimeFallback(b);
+                            }
+                            break;
+                        }
+                        case 0x8201:                        // UncompressedQuickTime
+                        {
+                            var drawn = UncompressedQuickTime(port, b.ReadExactly((int)b.ReadU32BE()));
                             if (drawn != null)
                             {
                                 quickTimeRect = drawn;
@@ -150,6 +151,43 @@ namespace QuickDraw.Pict
                 return;
             }
             s.Position = start;
+        }
+
+        // A bitmap opcode's operands (0x90-0x93, 0x98-0x9B): the BitMap/PixMap, srcRect, dstRect, mode, the mask
+        // region of the Rgn variants (odd opcodes), and the pixel data.
+        private static (PixMap pm, PictRect src, PictRect dst, int mode, Region? mask) ReadBits(BinaryReader b, int op)
+        {
+            bool direct = (op & 0x0A) == 0x0A || op == 0x0092 || op == 0x0093;
+            var pm = direct ? PixMap.ReadDirectHeader(b) : PixMap.ReadIndexedHeader(b);
+            var (src, dst, mode, mask) = ReadCopyBitsTail(b, hasRegion: (op & 1) != 0);
+            pm.ReadPixData(b);
+            return (pm, src, dst, mode, mask);
+        }
+
+        // UncompressedQuickTime (0x8201): version, the 3x3 matrix, matte size and rect, the matte (skipped, then
+        // word-aligned), then a bitmap opcode with its operands, drawn as QuickTime draws it. Returns where it drew
+        // (picture space), or null when the block holds no bitmap opcode.
+        private static PictRect? UncompressedQuickTime(GrafPort port, byte[] block)
+        {
+            using var b = new BinaryReader(new MemoryStream(block));
+            try
+            {
+                b.ReadU16BE();                                        // version
+                var matrix = new int[9];
+                for (int i = 0; i < 9; i++) matrix[i] = b.ReadI32BE();
+                long matteSize = b.ReadU32BE();
+                b.ReadRectBE();                                       // matte rect
+                if (matteSize > block.Length - b.BaseStream.Position) return null;
+                b.BaseStream.Position = (b.BaseStream.Position + matteSize + 1) & ~1L;
+                int op = b.ReadU16BE();
+                if (op < 0x0090 || op > 0x009B || (op > 0x0093 && op < 0x0098)) return null;
+                var (pm, src, dst, mode, mask) = ReadBits(b, op);
+                return port.UncompressedQuickTime(pm, src, dst, mode, mask, matrix);
+            }
+            catch (EndOfStreamException)
+            {
+                return null;
+            }
         }
 
         // srcRect, dstRect, mode and (Rgn variants) maskRgn, which sit between a CopyBits PixMap and its PixData.
@@ -221,7 +259,8 @@ namespace QuickDraw.Pict
                 case 0x002E:                                                              // glyphState
                 {
                     var data = b.ReadExactly(b.ReadU16BE());                              // outline preferred, preserve
-                    if (data.Length >= 3) port.GlyphState(data[2] != 0);                   // glyph, fractional widths, ...
+                    if (data.Length >= 3)                                                 // glyph, fractional widths,
+                        port.GlyphState(data[2] != 0, data.Length >= 4 && data[3] != 0);  // scaling disabled
                     return true;
                 }
             }

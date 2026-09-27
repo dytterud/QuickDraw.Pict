@@ -45,7 +45,7 @@ namespace QuickDraw.Pict
         public bool Version1;                                     // the picture's opcodes are version 1
         private int textFontId, pictureFontId;                    // the port's txFont, and the picture's number for it
         private int interCharSpacing;                             // LineJustify (Fixed per point)
-        private bool fractEnable;                                 // glyphState: fractional widths
+        private bool fractEnable, fScaleDisable;                  // glyphState: fractional widths, scaling disabled
         private int penFrac = 0x8000, pendingFrac = 0x8000;       // the pen's h fraction; PnLocHFrac for the next text
         private int textH, textV;                                 // text origin, picture space
         private (int h, int v) textNumer, textDenom;              // text scaling, as DrawPicture's play state
@@ -138,7 +138,8 @@ namespace QuickDraw.Pict
 
         public void PnLocHFrac(int fraction) => pendingFrac = fraction & 0xFFFF;
         public void LineJustify(int interCharacterSpacing) => interCharSpacing = interCharacterSpacing;
-        public void GlyphState(bool fractionalWidths) => fractEnable = fractionalWidths;
+        public void GlyphState(bool fractionalWidths, bool scalingDisabled) =>
+            (fractEnable, fScaleDisable) = (fractionalWidths, scalingDisabled);
 
         // ---- shapes ----
 
@@ -285,6 +286,18 @@ namespace QuickDraw.Pict
             return destination;
         }
 
+        // UncompressedQuickTime: the embedded bitmap opcode's image drawn to its dstRect, or, when the matrix is not
+        // the identity, to where the matrix puts its srcRect (bounding box; the same placement as a compressed image).
+        public PictRect UncompressedQuickTime(PixMap source, PictRect srcRect, PictRect dstRect, int mode, Region? pictureMask,
+            int[] matrix)
+        {
+            bool identity = matrix[0] == 0x10000 && matrix[1] == 0 && matrix[3] == 0 && matrix[4] == 0x10000 &&
+                matrix[6] == 0 && matrix[7] == 0;
+            var destination = identity ? dstRect : QuickTimeImage.Place(matrix, srcRect);
+            CopyBits(source, srcRect, destination, mode, pictureMask);
+            return destination;
+        }
+
         // ---- text ----
 
         // LongText sets the text origin; DH/DV/DHDV text move it from the previous origin. Drawing does not move it.
@@ -326,7 +339,8 @@ namespace QuickDraw.Pict
             fontNames.TryGetValue(pictureFontId, out var name);
             if (options.Fonts is { } library)
             {
-                var font = FontManager.Swap(library, textFontId, TextSize, TextFace, textNumer, textDenom, SpaceExtra, fractEnable);
+                var font = FontManager.Swap(library, textFontId, TextSize, TextFace, textNumer, textDenom, SpaceExtra, fractEnable,
+                    fScaleDisable);
                 if (font != null)
                 {
                     int charExtra = unchecked(((short)ChExtra << 4) + interCharSpacing);
@@ -381,7 +395,7 @@ namespace QuickDraw.Pict
                 return;
             }
             int width = (short)(TextDrawer.Measure(font, text, charExtra) >> 16);
-            int ascent = (byte)font.Font.Ascent, descent = (byte)font.Font.Descent;
+            int ascent = font.Ascent, descent = font.Descent;
             if (font.Shadow != 0) (ascent, descent) = (ascent + 1, descent + (byte)font.Shadow);
             if (font.Numer != font.Denom)
             {

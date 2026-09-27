@@ -15,9 +15,10 @@ namespace QuickDraw.Pict
         public int[] Widths = new int[256];
         public int Size;                                   // the requested size (the width table's fSize)
         public (int h, int v) InNumer, InDenom;            // the text scale it was asked for
+        public int Ascent, Descent;                        // FMOutput's metrics (bytes; scaled with FScaleDisable)
     }
 
-    // The Macintosh ROM's Font Manager (FMSwapFont, System 7 bitmap path; screen device, 80 dpi, FScaleDisable off).
+    // The Macintosh ROM's Font Manager (FMSwapFont, System 7 bitmap path; screen device, 80 dpi).
     //
     // The size searched for is the requested size scaled horizontally by numer.h / denom.h. A family with a 'FOND'
     // takes, from its association table, the exact size; else, with an outline (size 0) entry, TrueType; else double,
@@ -35,8 +36,13 @@ namespace QuickDraw.Pict
     // on the NFNT's width table or the family's; the style extra goes on every non-zero width; the space extra, scaled
     // back to the strike, on the space; carriage return has width 0.
     //
-    // Not modelled: TrueType ('sfnt') families (text in them goes to the outline fallback), FScaleDisable,
-    // synthetic color strikes and color NFNTs (1-bit strikes only), non-Roman scripts.
+    // With FScaleDisable (glyphState's scaling-disabled byte) a family skips the double/half sizes and takes the
+    // nearest smaller size (a larger one only when there is none smaller); old-style fonts scan downward first. The
+    // stretch is then cut to a power of two or three quarters of one (FOutNumer), and the leftover factor (1..2) scales
+    // every width after its style extra, and the ascent, descent and leading (ROM $FFCBEE98, $FFCBEBAA, $FFCBE588).
+    //
+    // Not modelled: TrueType ('sfnt') families (text in them goes to the outline fallback), synthetic color strikes
+    // and color NFNTs (1-bit strikes only), non-Roman scripts.
     internal static class FontManager
     {
         private const int Bold = 1, Italic = 2, Underline = 4, Outline = 8, Shadow = 16, Condense = 32, Extend = 64;
@@ -47,7 +53,7 @@ namespace QuickDraw.Pict
         private readonly record struct Found(BitmapFont Font, int ActualSize, int Remaining, FontFamilyRecord? Fond);
 
         public static FontSelection? Swap(PictFontLibrary library, int family, int size, int face,
-            (int h, int v) numer, (int h, int v) denom, int spaceExtra, bool fractEnable)
+            (int h, int v) numer, (int h, int v) denom, int spaceExtra, bool fractEnable, bool fScaleDisable)
         {
             if (size == 0) size = 12;
             if (size < 0) return null;
@@ -60,12 +66,12 @@ namespace QuickDraw.Pict
                 var fond = library.Family(candidate);
                 if (fond != null && fond.Associations.Length > 0)
                 {
-                    var found = FromFamily(library, fond, searchSize, face, out bool trueType);
-                    if (found != null) return Build(found.Value, size, face, numer, denom, spaceExtra, fractEnable);
+                    var found = FromFamily(library, fond, searchSize, face, fScaleDisable, out bool trueType);
+                    if (found != null) return Build(found.Value, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable);
                     if (trueType) return null;
                 }
-                if (candidate < 0x200 && FromOldFonts(library, candidate, searchSize, face) is { } old)
-                    return Build(old, size, face, numer, denom, spaceExtra, fractEnable);
+                if (candidate < 0x200 && FromOldFonts(library, candidate, searchSize, face, fScaleDisable) is { } old)
+                    return Build(old, size, face, numer, denom, spaceExtra, fractEnable, fScaleDisable);
             }
             return null;
         }
@@ -84,7 +90,7 @@ namespace QuickDraw.Pict
         }
 
         private static Found? FromFamily(PictFontLibrary library, FontFamilyRecord fond, int searchSize, int face,
-            out bool trueType)
+            bool fScaleDisable, out bool trueType)
         {
             trueType = false;
             var entries = new List<FontFamilyRecord.Association>();
@@ -111,27 +117,41 @@ namespace QuickDraw.Pict
 
             if (Has(searchSize) && Load(searchSize) is { } exact) return exact;
             if (entries.Exists(a => a.Size == 0)) { trueType = true; return null; }
-            if (Has(searchSize * 2) && Load(searchSize * 2) is { } doubled) return doubled;
-            if ((searchSize & 1) == 0 && Has(searchSize / 2) && Load(searchSize / 2) is { } half) return half;
-            int nearest = 0, best = int.MaxValue;
-            foreach (var a in entries)
+            if (!fScaleDisable)
             {
-                if (a.Size <= 0) continue;
-                int d = Math.Abs(a.Size - searchSize);
-                if (d < best || (d == best && a.Size > nearest)) (best, nearest) = (d, a.Size);
+                if (Has(searchSize * 2) && Load(searchSize * 2) is { } doubled) return doubled;
+                if ((searchSize & 1) == 0 && Has(searchSize / 2) && Load(searchSize / 2) is { } half) return half;
+            }
+            // The nearest size in table order (a leading size-0 entry skipped): the closest, later entries winning
+            // ties; with FScaleDisable a larger size ends the scan once a smaller one was found ($FFCBF57A).
+            int nearest = 0, best = 0x7FFF;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                if (i == 0 && entries[0].Size == 0) continue;
+                int d = (short)(searchSize - entries[i].Size);
+                if (d < 0)
+                {
+                    if (fScaleDisable && nearest != 0) break;
+                    d = -d;
+                }
+                if (d <= best) (best, nearest) = (d, entries[i].Size);
             }
             return nearest == 0 ? null : Load(nearest);
         }
 
         // Old-style FONTs (resource id family * 128 + size); nothing of the style is intrinsic.
-        private static Found? FromOldFonts(PictFontLibrary library, int family, int searchSize, int face)
+        private static Found? FromOldFonts(PictFontLibrary library, int family, int searchSize, int face, bool fScaleDisable)
         {
             int size = (searchSize == 0 ? 1 : searchSize) & 0x7F;
             var order = new List<int> { size };
             if (size < 64) order.Add(size * 2);
             if ((size & 1) == 0) order.Add(size / 2);
-            for (int s = size + 1; s <= 127; s++) order.Add(s);
-            for (int s = size - 1; s >= 1; s--) order.Add(s);
+            var up = new List<int>();
+            var down = new List<int>();
+            for (int s = size + 1; s <= 127; s++) up.Add(s);
+            for (int s = size - 1; s >= 1; s--) down.Add(s);
+            order.AddRange(fScaleDisable ? down : up);
+            order.AddRange(fScaleDisable ? up : down);
             foreach (int s in order)
                 if (library.OldStyleStrike(family, s) is { } strike)
                     return new Found(strike, s, face, null);
@@ -139,7 +159,7 @@ namespace QuickDraw.Pict
         }
 
         private static FontSelection Build(Found found, int size, int face, (int h, int v) numer, (int h, int v) denom,
-            int spaceExtra, bool fractEnable)
+            int spaceExtra, bool fractEnable, bool fScaleDisable)
         {
             var f = found.Font;
             int remaining = found.Remaining;
@@ -161,6 +181,19 @@ namespace QuickDraw.Pict
             int Out(int n, int d) => (FixedMath.FixMul(FixedMath.FixRatio((short)n, (short)d), sizeRatio) + 0x80) >> 8;
             s.Numer = (Out(numer.h, denom.h), Out(numer.v, denom.v));
             s.Denom = (0x100, 0x100);
+
+            // FScaleDisable: the stretch cut to a power of two (or 3/4 of one), the rest as a Fixed factor.
+            int hFactor = 0x10000, vFactor = 0x10000;
+            if (fScaleDisable)
+            {
+                (int nh, hFactor) = ReduceStretch(s.Numer.h);
+                (int nv, vFactor) = ReduceStretch(s.Numer.v);
+                s.Numer = (nh, nv);
+            }
+            int Metric(int b, int factor) =>
+                fScaleDisable ? (byte)FixedMath.FixRound(FixedMath.FixMul((sbyte)b << 16, factor)) : (byte)b;
+            s.Ascent = Metric(f.Ascent & 0xFF, vFactor);
+            s.Descent = Metric(f.Descent & 0xFF, vFactor);
 
             // Width source: with fractional widths, the NFNT's width table, else the family's (flags bit 14 clear).
             var fond = found.Fond;
@@ -189,6 +222,7 @@ namespace QuickDraw.Pict
 
             // The family's width table is read from its start for the strike's first..last char (so shifted when
             // the two ranges start differently), the missing symbol's width after them; 0xFFFF means missing.
+            // The strike's own width table likewise marks missing characters with 0xFFFF.
             int missing = f.MissingIndex;
             int Width(int index)
             {
@@ -198,21 +232,51 @@ namespace QuickDraw.Pict
                     if (word == 0xFFFF && index != missing) word = fond.WidthWord(fondWidths, missing);
                     return unchecked((int)((uint)word * (uint)actual << 4));
                 }
-                if (nfntWidths) return f.FractionalWidths![index] << 8;
+                if (nfntWidths)
+                {
+                    int word = f.FractionalWidths![index];
+                    if (word == 0xFFFF && index != missing) word = f.FractionalWidths[missing];
+                    return word << 8;
+                }
                 return (f.OffsetWidths[index] & 0xFF) << 16;
             }
+            bool tableWidths = fondWidths != null || nfntWidths;
+            bool scaleWidths = fScaleDisable && hFactor != 0x10000;
             for (int c = 0; c < 256; c++)
             {
                 bool inRange = c >= f.FirstChar && c <= f.LastChar;
-                int index = inRange && (fondWidths != null || f.OffsetWidths[c - f.FirstChar] != -1) ? c - f.FirstChar : missing;
+                int index = inRange && (tableWidths || f.OffsetWidths[c - f.FirstChar] != -1) ? c - f.FirstChar : missing;
                 int w = Width(index);
-                s.Widths[c] = w != 0 ? w + widthExtra : 0;
+                if (w != 0)
+                {
+                    w = unchecked(w + widthExtra);
+                    if (scaleWidths) w = FixedMath.FixMul(w, hFactor);
+                }
+                s.Widths[c] = w;
             }
             if (spaceExtra != 0)
                 s.Widths[' '] += FixedMath.FixMul(FixedMath.FixMul(FixedMath.FixRatio((short)numer.h, (short)denom.h),
                     FixedMath.FixRatio((short)s.Denom.h, (short)s.Numer.h)), spaceExtra);
             s.Widths['\r'] = 0;
             return s;
+        }
+
+        // FScaleDisable's cut ($FFCBEE98): with the stretch n (8.8) and a numerator starting at $100, halve n (doubling
+        // the numerator) while n >= $200, double it (halving the numerator) while n < $C0, and below $100 take 3/4 of
+        // the numerator and n * 4 / 3. n is left as the factor (1..2, returned as Fixed). The ROM never returns for a
+        // stretch of 0 or of $8000 and up; those are left uncut here.
+        private static (int numer, int factor) ReduceStretch(int stretch)
+        {
+            if (stretch <= 0 || stretch >= 0x8000) return (stretch, 0x10000);
+            int n = stretch, numer = 0x100;
+            while (n >= 0x200) { numer = (short)(numer << 1); n >>= 1; }
+            while (n < 0xC0) { numer >>= 1; n <<= 1; }
+            if (n < 0x100)
+            {
+                numer = (short)(numer * 3) >> 2;
+                n = (n << 2) / 3;
+            }
+            return (numer & 0xFFFF, n << 8);
         }
 
         // The family width table for a style: the exact one, else the best-scoring subset.

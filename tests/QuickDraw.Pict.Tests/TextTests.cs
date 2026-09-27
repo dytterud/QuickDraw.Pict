@@ -206,7 +206,7 @@ public class TextTests
         lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (12, 0, 2)));
         lib.AddNfnt(1, Font9);
         lib.AddNfnt(2, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
-        FontSelection Swap(int size) => FontManager.Swap(lib, Family, size, 0, (1, 1), (1, 1), 0, false)!;
+        FontSelection Swap(int size) => FontManager.Swap(lib, Family, size, 0, (1, 1), (1, 1), 0, false, false)!;
 
         Assert.Equal(3, Swap(9).Font.Ascent);
         Assert.Equal(4, Swap(12).Font.Ascent);
@@ -223,8 +223,8 @@ public class TextTests
         lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (9, 1, 2)));
         lib.AddNfnt(1, Font9);
         lib.AddNfnt(2, Font9);
-        var bold = FontManager.Swap(lib, Family, 9, 1, (1, 1), (1, 1), 0, false)!;
-        var boldItalic = FontManager.Swap(lib, Family, 9, 3, (1, 1), (1, 1), 0, false)!;
+        var bold = FontManager.Swap(lib, Family, 9, 1, (1, 1), (1, 1), 0, false, false)!;
+        var boldItalic = FontManager.Swap(lib, Family, 9, 3, (1, 1), (1, 1), 0, false, false)!;
 
         Assert.Equal((0, 0), (bold.Bold, bold.Extra));
         Assert.Equal((0, 8), (boldItalic.Bold, boldItalic.Italic));
@@ -239,8 +239,55 @@ public class TextTests
         lib.AddNfnt(1, Font9);
         lib.AddNfnt(2, Font9);
         lib.AddNfnt(3, Font9);
-        var s = FontManager.Swap(lib, Family, 9, 3, (1, 1), (1, 1), 0, false)!;
+        var s = FontManager.Swap(lib, Family, 9, 3, (1, 1), (1, 1), 0, false, false)!;
         Assert.Equal((1, 0, 1), (s.Bold, s.Italic, s.CurStyle));
+    }
+
+    [Fact]
+    public void FontManager_ScalingDisabled_TakesTheNearestSmallerSizeAndScalesWidthsByTheRest()
+    {
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (12, 0, 2)));
+        lib.AddNfnt(1, Font9);
+        lib.AddNfnt(2, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
+        var s = FontManager.Swap(lib, Family, 11, 0, (1, 1), (1, 1), 0, false, fScaleDisable: true)!;
+        Assert.Equal(3, s.Font.Ascent);                       // 9, not the nearer 12
+        Assert.Equal((0x100, 0x100), s.Numer);                // 11/9 = $139 stays a width factor, not a stretch
+        Assert.Equal(3 * 0x13900, s.Widths['A']);
+    }
+
+    [Fact]
+    public void FontManager_ScalingDisabled_CutsTheStretchToAPowerOfTwoOrThreeQuarters()
+    {
+        var lib = new PictFontLibrary();
+        lib.AddFamily(Family, null, Family(Family, (9, 0, 1)));
+        lib.AddNfnt(1, Font9);
+        // 7 pt: no smaller size, so 9; 7/9 = $C7 becomes 3/4 ($C0) with the factor $C7 * 4 / 3 = $109.
+        var small = FontManager.Swap(lib, Family, 7, 0, (1, 1), (1, 1), 0, false, fScaleDisable: true)!;
+        Assert.Equal((0xC0, 0xC0), small.Numer);
+        Assert.Equal(3 * 0x10900, small.Widths['A']);
+        // 36 pt: no double/half search; 9 stretched x4 exactly, widths untouched.
+        var large = FontManager.Swap(lib, Family, 36, 0, (1, 1), (1, 1), 0, false, fScaleDisable: true)!;
+        Assert.Equal((0x400, 0x400), large.Numer);
+        Assert.Equal(3 << 16, large.Widths['A']);
+    }
+
+    [Fact]
+    public void FontManager_ScalingDisabled_ScansOldStyleSizesDownwardFirst()
+    {
+        var lib = new PictFontLibrary();
+        lib.AddFont(Family * 128 + 9, Font9);
+        lib.AddFont(Family * 128 + 12, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
+        Assert.Equal(3, FontManager.Swap(lib, Family, 10, 0, (1, 1), (1, 1), 0, false, fScaleDisable: true)!.Font.Ascent);
+    }
+
+    [Fact]
+    public void Text_GlyphStateScalingDisabled_SpacesUnstretchedGlyphsByScaledWidths()
+    {
+        // 12 pt from the 9 pt strike: glyphs stay 9 pt, advancing 3 x 12/9 = 3.996: the second 'A' at 2.5 + 3.996 -> 6.
+        var rows = Text("AA", before: b => b.Align().U16(0x000D).U16(12).U16(0x002E).U16(4).U8(0).U8(0).U8(0).U8(1));
+        Assert.Equal("..##..##..", rows[1]);
+        Assert.Equal("..........", rows[4]);
     }
 
     [Fact]
@@ -257,8 +304,8 @@ public class TextTests
         var lib = new PictFontLibrary();
         lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (0, 0, 2)));
         lib.AddNfnt(1, Font9);
-        Assert.NotNull(FontManager.Swap(lib, Family, 9, 0, (1, 1), (1, 1), 0, false));
-        Assert.Null(FontManager.Swap(lib, Family, 18, 0, (1, 1), (1, 1), 0, false));
+        Assert.NotNull(FontManager.Swap(lib, Family, 9, 0, (1, 1), (1, 1), 0, false, false));
+        Assert.Null(FontManager.Swap(lib, Family, 18, 0, (1, 1), (1, 1), 0, false, false));
     }
 
     [Fact]
@@ -269,7 +316,7 @@ public class TextTests
         lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (12, 0, 2)));
         lib.AddNfnt(1, Font9);
         lib.AddFont(Family * 128 + 9, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
-        Assert.Equal(4, FontManager.Swap(lib, Family, 11, 0, (1, 1), (1, 1), 0, false)!.Font.Ascent);
+        Assert.Equal(4, FontManager.Swap(lib, Family, 11, 0, (1, 1), (1, 1), 0, false, false)!.Font.Ascent);
     }
 
     [Fact]
@@ -282,7 +329,7 @@ public class TextTests
         var lib = new PictFontLibrary();
         lib.AddFamily(Family, null, Family(Family, 0, 31, 103, new[] { (0, words) }, (9, 0, 1)));
         lib.AddNfnt(1, Font9);
-        var s = FontManager.Swap(lib, Family, 9, 0, (1, 1), (1, 1), 0, fractEnable: true)!;
+        var s = FontManager.Swap(lib, Family, 9, 0, (1, 1), (1, 1), 0, fractEnable: true, fScaleDisable: false)!;
         Assert.Equal(('A' - ' ' + 1) * 9 << 4, s.Widths['A']);
         Assert.Equal(73 * 9 << 4, s.Widths['g']);
         Assert.Equal(73 * 9 << 4, s.Widths[200]);
@@ -304,7 +351,7 @@ public class TextTests
         lib.AddFamily(Family, null, Family(Family, (9, 0, 1), (13, 0, 2)));
         lib.AddNfnt(1, Font9);
         lib.AddNfnt(2, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
-        Assert.Equal(4, FontManager.Swap(lib, Family, 11, 0, (1, 1), (1, 1), 0, false)!.Font.Ascent);
+        Assert.Equal(4, FontManager.Swap(lib, Family, 11, 0, (1, 1), (1, 1), 0, false, false)!.Font.Ascent);
     }
 
     [Fact]
@@ -314,7 +361,7 @@ public class TextTests
         var lib = new PictFontLibrary();
         lib.AddFont(Family * 128 + 9, Font9);
         lib.AddFont(Family * 128 + 12, Build(4, 2, 0, 0, new[] { new Glyph('A', 4, 0, "###") }));
-        var s = FontManager.Swap(lib, Family, 10, 0, (1, 1), (1, 1), 0, false)!;
+        var s = FontManager.Swap(lib, Family, 10, 0, (1, 1), (1, 1), 0, false, false)!;
         Assert.Equal(4, s.Font.Ascent);
         Assert.Equal((213, 213), s.Numer);                 // 10 / 12 as 8.8, rounded
     }
@@ -327,7 +374,7 @@ public class TextTests
         {
             new Glyph('\r', 5, 0, "#"), new Glyph(' ', 2, 0), new Glyph('A', 3, 0, "##"), new Glyph('B', 0, 0, "#"),
         }, missing: new Glyph('\0', 2, 0, "#")));
-        var s = FontManager.Swap(lib, Family, 9, 1, (1, 1), (1, 1), 0, false)!;   // bold: extra 1
+        var s = FontManager.Swap(lib, Family, 9, 1, (1, 1), (1, 1), 0, false, false)!;   // bold: extra 1
         Assert.Equal(4 << 16, s.Widths['A']);
         Assert.Equal(0, s.Widths['B']);                    // zero widths get no extra
         Assert.Equal(3 << 16, s.Widths['Z']);              // the missing symbol's width does
