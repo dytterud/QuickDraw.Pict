@@ -1,0 +1,15 @@
+# Normalise text files to LF in the repository; each checkout uses the platform's line endings.
+* text=auto
+
+*.cs      text diff=csharp
+*.csproj  text
+*.slnx    text
+*.props   text
+*.md      text
+*.json    text
+
+# Binary test data: QuickDraw pictures, screenshots, fonts.
+*.pict    binary
+*.pct     binary
+*.png     binary
+*.rsrc    binary
