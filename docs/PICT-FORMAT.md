@@ -1776,15 +1776,20 @@ follows the rules below. It still uses the ROM's MapPt, MapRect, ScalePt, FixMul
 - **A lone carriage return** (a text of exactly one byte 13) draws nothing and leaves the pen. A carriage return
   inside longer text draws its glyph with advance 0.
 - **Stretched text advances the pen** by `FixMul(width, numer/denom)`, rounded half up.
-- **Stretched text in srcOr, srcXor and srcBic** (modes 1–3) does not use MapRect or the copy DDA for its rows:
-  - The text rect's top and bottom map about the pen **rounding half up**:
-    `y' = pen.v + floor((y − pen.v) × numer.v / denom.v + ½)`. For example, −13.5 becomes −13, where MapRect gives
-    −14. The columns still use MapRect.
-  - Enlarging from s rows to d rows, destination row k takes source row `floor((2ks + d) / 2d)`, that is
-    `floor(k·s/d + ½)`. The copy DDA uses `ceil(s(2k+1)/2d) − 1`.
-  - Reducing, destination row k ORs source rows `[b(k−1), b(k))`, where `b(k) = ($D000 + (k+1) × FixRatio(s, d)) >> 16`
-    and b(−1) = 0.
-  - The other modes use MapRect and the copy DDA (§17.2).
+- **Stretched text** has no routine of its own. The 1-bit text buffer is stretched from the text rect to the mapped
+  rect, and the mapping is the same for every mode:
+  - **The destination rect:** each pen-relative edge o maps to `sign(o) × floor((|o| × N + 128) / 256)`, with N the
+    8.8 stretch of that axis. This is MapRect about the pen.
+  - **Rows and columns:** the ordinary DDA (§17.2) on the rect sizes S → D, from the rect's own top-left:
+    - enlarging, `ceil(S(2k+1)/2D) − 1`;
+    - reducing, the OR of `[end(k−1), end(k))`, where `end(k) = floor((k+1)S/D + ½)`.
+  - **The mode changes only the source rect.**
+    - srcOr, srcXor and srcBic use the union of the glyph images. Vertically, that is the rows that hold ink, raised to
+      at least the baseline; spaces count as points on the baseline.
+    - srcCopy, modes above 3 and underlined text extend it to −ascent..descent and the rounded width.
+    - For example, Geneva 9 text spans rows −7..2 (ink) or −10..2 (extended).
+  - **Not covered:** banding (a buffer over 32 KB) and run splits restart the rounding per band. Outline and shadow
+    shrink the rect by 1 first.
 - **Colour bitmap fonts** (an NFNT with fontType bits 2–4 = log₂ depth > 0, strike rows `rowWords × 2 × depth` bytes;
   in a FOND the association's style high byte is the depth code):
   - At a chosen size and style, the last association of the same size and low style byte with depth code 1–4 is
@@ -1808,12 +1813,9 @@ in both modes:
   - italic rows that need shifts of 32 bits or more (from about 64 rows at the default slant) are corrupted;
   - a clipped reduction's right-edge span is one column short;
   - a destination rect past the pixel map's bounds picks its scaling routine from truncated widths.
-- **Stretched srcOr text:**
-  - the reduction phase `$D000` (§17.4) is fitted to renders, not read from code;
-  - exact halves in the enlarge rule (such as an exact 2×) are unverified.
 
-Differences that only concern other destinations (dithering, 1-to-8-bit copies, indexed destinations, black-and-white
-ports) or the destination's alpha byte do not apply to a 32-bit RGBA canvas.
+Indexed and 16-bit screens are covered in §19. Old black-and-white ports and the destination's alpha byte do not
+apply.
 
 ---
 

@@ -51,14 +51,20 @@ namespace QuickDraw.Pict
                 // Mac OS 9: the union of the glyph images (and spaces' origins), widened to the rounded advance for
                 // copy-like modes or underline, plus bold, italic lean less the extra, and shadow; the left edge gives
                 // room for the italic lean below the baseline.
-                var (inkLeft, inkRight) = InkExtent(s, text, cx);
+                var (inkLeft, inkRight, inkTop, inkBottom) = InkExtent(s, text, cx);
                 int rounded = (width + 0x8000) >> 16, it = (sbyte)s.Italic;
                 int right = inkRight;
-                if (mode == 0 || mode > 3 || s.UlThick != 0) right = Math.Max(right, rounded);
+                bool extended = mode == 0 || mode > 3 || s.UlThick != 0;
+                if (extended) right = Math.Max(right, rounded);
                 right += s.Bold + (it != 0 ? it * (f.Ascent - 1) / 16 - s.Extra : 0) + (s.Shadow != 0 ? Math.Min(s.Shadow + 1, 4) : 0);
                 if (s.Extra > 0) right = Math.Max(right - s.Extra, rounded);
                 int left = Math.Min(inkLeft - (it != 0 ? it * (f.Descent - 1) / 16 : 0), 0);
-                textRect = new PictRect(top, (short)(penH + left), (short)(top + f.RectHeight), (short)(penH + right));
+                // Vertically the ink rows, from the baseline up at least, for srcOr / srcXor / srcBic; the whole font
+                // rect for the other modes, underline and shadow.
+                int rectTop = top, rectBottom = top + f.RectHeight;
+                if (!extended && s.Shadow == 0)
+                    (rectTop, rectBottom) = (penV + Math.Min(inkTop, 0), penV + Math.Max(inkBottom, Math.Min(inkTop, 0)));
+                textRect = new PictRect((short)rectTop, (short)(penH + left), (short)rectBottom, (short)(penH + right));
             }
             else
             {
@@ -86,7 +92,6 @@ namespace QuickDraw.Pict
             // Scaling: the whole buffer is stretched once from (pen + denom) to (pen + numer).
             bool stretch = s.Numer != s.Denom;
             PictRect fromRect = default, toRect = default, dstRect = textRect;
-            bool textRows = false;
             int advance = width;
             if (stretch)
             {
@@ -96,15 +101,6 @@ namespace QuickDraw.Pict
                 toRect = new PictRect(penV, penH, penV + s.Numer.v, penH + s.Numer.h);
                 fromRect = new PictRect(penV, penH, penV + s.Denom.v, penH + s.Denom.h);
                 dstRect = PictureMapping.MapRect(textRect, fromRect, toRect);
-                if (s.MacOS9 && mode is >= 1 and <= 3)
-                {
-                    // Mac OS 9 maps the rect's rows about the pen rounding half up, not with MapRect.
-                    long twiceDenom = 2L * (ushort)s.Denom.v;
-                    int MapRow(int y) => penV + (int)Math.Floor(
-                        (decimal)((long)(y - penV) * (ushort)s.Numer.v * 2 + (ushort)s.Denom.v) / twiceDenom);
-                    dstRect = new PictRect(MapRow(textRect.Top), dstRect.Left, MapRow(textRect.Bottom), dstRect.Right);
-                    textRows = true;
-                }
             }
             int newFrac = (penFrac + advance) & 0xFFFF;
 
@@ -177,8 +173,8 @@ namespace QuickDraw.Pict
                 Blit(canvas, pix, srcRect, shadowDst, mode, masked, clip, hilitePending, colors);
                 return newFrac;
             }
-            Blit(canvas, ToPixMap(buffer, bufWidth, height, new PictRect(textRect.Top, bufLeft, textRect.Bottom, textRect.Right)),
-                textRect, dstRect, mode, masked, clip, hilitePending, colors, textRows);
+            Blit(canvas, ToPixMap(buffer, bufWidth, height, new PictRect(top, bufLeft, top + height, textRect.Right)),
+                textRect, dstRect, mode, masked, clip, hilitePending, colors);
             return newFrac;
         }
 
@@ -253,16 +249,18 @@ namespace QuickDraw.Pict
 
         // Mac OS 9's ink union, relative to the pen: each glyph image at ((advance so far + 1/2) >> 16) + its offset +
         // kernMax, for its strike width, and each space's origin.
-        private static (int left, int right) InkExtent(FontSelection s, ReadOnlySpan<byte> text, int cx)
+        private static (int left, int right, int top, int bottom) InkExtent(FontSelection s, ReadOnlySpan<byte> text, int cx)
         {
             var f = s.Font;
             int left = int.MaxValue, right = int.MinValue, advance = 0, span = f.LastChar - f.FirstChar;
+            int top = int.MaxValue, bottom = int.MinValue;              // baseline-relative ink rows [top, bottom)
             foreach (byte c in text)
             {
                 int origin = (advance + 0x8000) >> 16;
                 if (c == ' ')
                 {
                     (left, right) = (Math.Min(left, origin), Math.Max(right, origin));
+                    (top, bottom) = (Math.Min(top, 0), Math.Max(bottom, 0));
                     advance = unchecked(advance + s.Widths[' ']);
                     continue;
                 }
@@ -279,8 +277,17 @@ namespace QuickDraw.Pict
                 if (bits <= 0) continue;
                 int x = origin + ((ow >> 8) & 0xFF) + f.KernMax;
                 (left, right) = (Math.Min(left, x), Math.Max(right, x + bits));
+                int srcLeft = f.Locations[index];
+                for (int y = 0; y < f.RectHeight; y++)
+                    for (int b = 0; b < bits; b++)
+                        if (f.StrikeBit(y, srcLeft + b))
+                        {
+                            (top, bottom) = (Math.Min(top, y - f.Ascent), Math.Max(bottom, y - f.Ascent + 1));
+                            break;
+                        }
             }
-            return left > right ? (0, 0) : (left, right);
+            if (top > bottom) (top, bottom) = (0, 0);
+            return left > right ? (0, 0, top, bottom) : (left, right, top, bottom);
         }
 
         // Mac OS 9's italic: rows above the baseline's first row below (row `ascent`) shift right by
@@ -306,26 +313,23 @@ namespace QuickDraw.Pict
         // StretchBits with the text mode; a masked mode uses the bits themselves as the mask (so only the glyphs'
         // pixels are touched).
         private static void Blit(PictBitmap canvas, PixMap bits, PictRect srcRect, PictRect dstRect, int mode, bool masked,
-            Region? clip, bool hilitePending, in PortColors colors, bool textRows = false)
+            Region? clip, bool hilitePending, in PortColors colors)
         {
-            var rows = textRows && !dstRect.IsEmpty
-                ? Bits.TextRowGroupsMacOS9(srcRect.Top - bits.Bounds.Top, srcRect.Height, dstRect.Height, bits.Bounds.Height)
-                : null;
             if (masked)
             {
-                var mask = MaskRegion(bits, srcRect, dstRect, colors.MacOS9, rows);
+                var mask = MaskRegion(bits, srcRect, dstRect, colors.MacOS9);
                 clip = clip == null ? mask : clip.Intersect(mask);
             }
-            Bits.CopyBits(canvas, bits, srcRect, dstRect, mode, clip, hilitePending, colors, false, rows);
+            Bits.CopyBits(canvas, bits, srcRect, dstRect, mode, clip, hilitePending, colors, false);
         }
 
-        private static Region MaskRegion(PixMap bits, PictRect srcRect, PictRect dstRect, bool macOS9, int[]?[]? rowGroups)
+        private static Region MaskRegion(PixMap bits, PictRect srcRect, PictRect dstRect, bool macOS9)
         {
             if (dstRect.IsEmpty) return Region.Empty;
             var scratch = new PictBitmap(dstRect.Width, dstRect.Height);
             var black = new PictColor(0, 0, 0);
             Bits.CopyBits(scratch, bits, srcRect, new PictRect(0, 0, dstRect.Height, dstRect.Width), TransferModes.SrcCopy,
-                null, false, new PortColors(black, new PictColor(255, 255, 255), default, default, macOS9), false, rowGroups);
+                null, false, new PortColors(black, new PictColor(255, 255, 255), default, default, macOS9), false);
             var rows = new SortedDictionary<int, List<int>>();
             for (int y = 0; y < scratch.Height; y++)
                 for (int x = 0; x < scratch.Width; x++)

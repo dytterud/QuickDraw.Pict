@@ -171,15 +171,15 @@ public class TextTests
     }
 
     [Fact]
-    public void Text_MacOS9_StretchedSrcOrRowsRoundHalfUpAboutThePen()
+    public void Text_MacOS9_StretchedSrcOrUsesTheInkRowsAsItsRect()
     {
-        // Vertical 3/2 (SheepShaver-verified rule): the rect's rows 1..6 map about the pen (v 4) rounding half up to
-        // 0..7, and destination row k takes source row floor(k x 5/7 + 1/2): 0, 1, 1, 2, 3, 4, 4. (The copy modes'
-        // MapRect and centre-sampling DDA would give row 2 = source 2.)
+        // Vertical 3/2 about the pen (v 4), glyph rows ".." "#." ".#" "##" "#." (ascent 3, descent 2). srcOr's rect is
+        // the ink rows (-2..2 about the baseline: rows 2..5), mapped to 1..7, and the ordinary DDA picks source rows
+        // 0, 0, 1, 2, 2, 3 of it; a copy mode's rect would be the whole font rect (-3..2 -> -1..7).
         var lib = new PictFontLibrary();
-        lib.AddFont(Family * 128 + 9, Build(3, 2, 0, 1, new[] { new Glyph('B', 3, 0, "#.", ".#", "##", "#.", ".#") }));
+        lib.AddFont(Family * 128 + 9, Build(3, 2, 0, 1, new[] { new Glyph('B', 3, 0, "..", "#.", ".#", "##", "#.") }));
         var rows = Text("B", fonts: lib, height: 9, before: b => b.Align().U16(0x0010).Point(3, 1).Point(2, 1));
-        Assert.Equal(new[] { "..#.", "...#", "...#", "..##", "..#.", "...#", "...#", "...." },
+        Assert.Equal(new[] { "....", "..#.", "..#.", "...#", "..##", "..##", "..#.", "...." },
             rows.Take(8).Select(r => r[..4]).ToArray());
     }
 
