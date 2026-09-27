@@ -73,6 +73,23 @@ public class WriterTests
     private static byte Five(byte v) => (byte)((v >> 3 << 3) | (v >> 5));
 
     [Fact]
+    public void Writer_IncompressibleRows_StayReadableByMacOS9()
+    {
+        // 32 distinct pixels per row pack to more bytes than Mac OS 9's plane buffer holds, so the strip is written
+        // unpacked (packType 1); both QuickDraws read it back exactly.
+        var bmp = new PictBitmap(32, 2);
+        for (int i = 0; i < 64; i++)
+        {
+            bmp.Pixels[4 * i] = (byte)(i * 7); bmp.Pixels[4 * i + 1] = (byte)(i * 13 + 1);
+            bmp.Pixels[4 * i + 2] = (byte)(i * 29 + 2); bmp.Pixels[4 * i + 3] = 255;
+        }
+        using var ms = new MemoryStream();
+        PictWriter.Write(ms, bmp, new PictWriteOptions { FileHeader = false });
+        foreach (var quickDraw in new[] { PictQuickDraw.MacOS9, PictQuickDraw.MacRom })
+            Assert.Equal(bmp.Pixels, PictReader.Decode(ms.ToArray(), new PictDecodeOptions { QuickDraw = quickDraw }).Pixels);
+    }
+
+    [Fact]
     public void Indexed1_WhiteAndBlack_IsWrittenAsAPlainBitMap()
     {
         var bytes = Save(Card(80, 1, (x, _) => x % 2 == 0 ? new PictColor(0, 0, 0) : new PictColor(255, 255, 255)),

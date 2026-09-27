@@ -223,6 +223,9 @@ namespace QuickDraw.Pict
                     }
                     return;
                 }
+                case 4 when MacOS9:
+                    ReadPlanesMacOS9(b, height, sizesAreWords, pixels);
+                    return;
                 case 4:
                 {
                     int planes = Math.Clamp(CmpCount, 1, 4), first = 4 - planes;
@@ -250,6 +253,47 @@ namespace QuickDraw.Pict
                         Data[4 * i + 1] = raw[s]; Data[4 * i + 2] = raw[s + 1]; Data[4 * i + 3] = raw[s + 2];
                     }
                     return;
+            }
+        }
+
+        // Mac OS 9's component-plane reader (native GetPMData): three planes (bytes 1-3, alpha 0) unless cmpCount is
+        // 4, unpacking n = rowBytes - rowBytes/4 bytes (rowBytes with 4 planes) per row. Its packed-row buffer holds
+        // only (n + (n >> 7) + 3) & ~3 bytes and the unpack buffer follows it directly, both kept for the whole
+        // image: a row packed into more bytes than that spills into the unpack buffer, and the lazy unpacker, reading
+        // those bytes after it has overwritten them, repeats early output there (a real Mac OS 9 artifact).
+        private void ReadPlanesMacOS9(BinaryReader b, int height, bool sizesAreWords, int pixels)
+        {
+            int planes = CmpCount == 4 ? 4 : 3, first = 4 - planes;
+            int n = CmpCount == 4 ? RowBytes : RowBytes - RowBytes / 4;
+            int packSize = (n + (n >> 7) + 3) & ~3;
+            var memory = new byte[packSize + n];
+            for (int y = 0; y < height; y++)
+            {
+                int count = sizesAreWords ? b.ReadU16BE() : b.ReadByte();
+                var packed = b.ReadExactly(count);
+                Array.Copy(packed, 0, memory, 0, Math.Min(count, memory.Length));
+                int src = 0, dst = 0;
+                while (dst < n && src < memory.Length)
+                {
+                    sbyte flag = (sbyte)memory[src++];
+                    if (flag >= 0)
+                    {
+                        for (int i = 0; i <= flag && dst < n && src < memory.Length; i++) memory[packSize + dst++] = memory[src++];
+                    }
+                    else
+                    {
+                        if (src >= memory.Length) break;
+                        byte v = memory[src++];
+                        for (int i = 0; i < 1 - flag && dst < n; i++) memory[packSize + dst++] = v;
+                    }
+                }
+                int row = y * RowBytes;
+                for (int k = 0; k < planes; k++)
+                    for (int x = 0; x < pixels; x++)
+                    {
+                        int at = k * pixels + x;
+                        if (at < n) Data[row + 4 * x + first + k] = memory[packSize + at];
+                    }
             }
         }
 

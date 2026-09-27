@@ -228,8 +228,14 @@ namespace QuickDraw.Pict
         private void Shape(int verb, Func<Region> interior, Func<Region> frame, bool viaStretchBits)
         {
             var colors = Colors;
-            // The ROM's DrawArc (ovals, round rects, arcs) draws nothing with ditherCopy; Mac OS 9 drops the bit.
-            if (!macOS9 && !viaStretchBits && verb <= 1 && (PenMode & TransferModes.DitherCopy) != 0) { Done(); return; }
+            // DrawArc (ovals, round rects, arcs) takes the pen mode with bit 3 forced and draws only pattern modes
+            // 8-15, arithmetic modes 40-47 and hilite 58; any other mode (16-31, 49, 64 and up, ...) draws nothing
+            // (ROM $FFC93E8C; Mac OS 9 the same after dropping bit 6).
+            if (!viaStretchBits && verb <= 1)
+            {
+                int m = (macOS9 ? PenMode & ~TransferModes.DitherCopy : PenMode) | 8;
+                if (!(m <= 15 || (m >= 40 && m <= 47) || m == 58)) { Done(); return; }
+            }
             switch (verb)
             {
                 case 0: Painter.FillRegion(canvas, frame(), clip, PnPat, PatternAlign, PenMode, hilitePending, colors, viaStretchBits); break;

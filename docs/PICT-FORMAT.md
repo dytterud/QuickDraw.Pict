@@ -559,8 +559,9 @@ Details:
 - **Rect-based shapes** map the rect, then draw nothing if the mapped rect is empty.
 - **Polygons with fewer than two points** draw nothing.
 - **Framing a polygon** draws a line (§9.5) between each pair of consecutive vertices and **does not close it**.
-- **Mode 64 (ditherCopy) on ovals, round rects and arcs** (ROM, DrawArc): frame and paint draw **nothing**.
-  Elsewhere ditherCopy is treated as copy.
+- **Pen modes on ovals, round rects and arcs** (ROM, DrawArc `$FFC93E8C`; Mac OS 9 the same): frame and paint force
+  bit 3 of the pen mode and draw only modes 8–15, 40–47 and 58 (hilite). Any other mode draws **nothing**: 16–31,
+  48–57 (including grayishTextOr), 59–63, and 64 and up (ditherCopy). Elsewhere ditherCopy is treated as copy.
 - **HiliteMode** applies to the next drawing operation only. Every drawing operation clears it, whether or not it
   used it.
 
@@ -692,7 +693,7 @@ All runs are clipped to [left, right).
   pattern pixel is not the background colour (contrast §10.5).
 - **Pen modes:**
   - source modes act as the corresponding pattern modes;
-  - ditherCopy draws nothing (§8.3).
+  - only modes 8–15, 40–47 and 58 draw once bit 3 is forced; everything else draws nothing (§8.3).
 
 ### 9.4 Lines
 
@@ -1577,6 +1578,9 @@ A picture that every PICT reader, and the ROM, decodes identically:
      - cmpCount 3 (planes R, G, B) or 4 (planes A, R, G, B);
      - each row is the planes back to back, each `width` bytes, PackBits-compressed as one line.
      - With rowBytes < 8, write unpacked `A/0, R, G, B` pixels instead.
+     - **Mac OS 9 compatibility:** if any row of a strip packs into more than `(n + (n >> 7) + 3) & ~3` bytes (n =
+       planes × width), Mac OS 9 misreads it (§17.1). Write that strip with **packType 1** (unpacked `A/0, R, G, B`
+       rows, no byte counts) instead. Incompressible rows always exceed the limit.
    - srcRect = dstRect = the strip's bounds; mode 0 (srcCopy).
    - Each packed row is preceded by its byte count: a u8, or a u16 when rowBytes > 250.
 6. **Strips:** rowBytes has only 14 bits, so a strip is at most `$3FFE` bytes wide:
@@ -1630,6 +1634,16 @@ follows the rules below. It still uses the ROM's MapPt, MapRect, ScalePt, FixMul
 - **PackBits:** a flag of `$80` (−128) is a run of 129 copies of the next unit. It is never a no-op.
 - **Round rects:** the corner size is clamped to `[0, rect size]` on each axis, and a zero width or height draws a
   plain rect.
+- **Component planes (packType 4)** are read through Mac OS 9's own buffers:
+  - Always 3 planes, landing on pixel bytes 1–3, unless cmpCount is 4 (then 4 planes, bytes 0–3).
+  - Unpacked length per row: `n = rowBytes − rowBytes/4`, or `rowBytes` with 4 planes.
+  - The packed-row buffer holds only `P = (n + (n >> 7) + 3) & ~3` bytes. The unpack buffer follows it directly in
+    one block that is kept for the whole image.
+  - Model it as one array `mem` of `P + n` bytes. Copy each row's packed bytes to `mem[0…]`; a long row spills past
+    P. Then unpack, reading `mem[src++]` and writing `mem[P + dst++]` until n bytes are out (`$80` = run of 129).
+  - A row packed into more than P bytes therefore reads spilled bytes that its own output has already overwritten.
+    For example, a 97-byte row of 96 literals ends with its first output byte, so pixel 31's blue takes pixel 0's
+    red. The ROM reads such rows correctly.
 
 ### 17.2 Bitmaps
 
@@ -1650,7 +1664,8 @@ follows the rules below. It still uses the ROM's MapPt, MapRect, ScalePt, FixMul
 ### 17.3 Shapes
 
 - **Arc slopes** use a half-up fixed multiply, `(a·b + $8000) >> 16`. This rarely moves an arc edge by one pixel.
-- **Pen modes 64–79** draw as modes 0–15. The ROM draws nothing for ditherCopy ovals, round rects and arcs.
+- **Pen modes:** bit 6 is dropped first (64–79 draw as 0–15), then the same acceptance rule as the ROM applies
+  (§8.3).
 
 ### 17.4 Text and the Font Manager
 

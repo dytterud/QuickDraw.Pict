@@ -110,6 +110,17 @@ public class DrawingTests
     }
 
     [Fact]
+    public void OvalWithPenMode16To31_DrawsNothing()
+    {
+        // DrawArc accepts only modes 8-15, 40-47 and 58 (bit 3 forced): PnMode 23 paints and frames nothing, on both.
+        foreach (var options in new[] { null, Rom })
+        {
+            var bmp = Draw(4, 4, b => b.U16(0x0008).U16(23).U16(0x0051).Rect(0, 0, 4, 4).U16(0x0050).Rect(0, 0, 4, 4), options);
+            Assert.All(Picture(bmp), row => Assert.Equal("....", row));
+        }
+    }
+
+    [Fact]
     public void DitherCopy_OnMacOS9_DrawsOvalsAsCopy()
     {
         var bmp = Draw(4, 2, b => b.U16(0x0008).U16(64).U16(0x0051).Rect(0, 0, 2, 2).U16(0x0031).Rect(0, 2, 2, 4));

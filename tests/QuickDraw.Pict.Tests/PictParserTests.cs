@@ -205,13 +205,16 @@ public class PictParserTests
 
     // 32-bit direct pixels, 3 pixels wide (rowBytes 12, packed since >= 8) with the given packType and cmpCount.
     private static PictBitmap Direct32Row(int packType, int cmpCount, params byte[] pixData) =>
+        Direct32Row(packType, cmpCount, PictQuickDraw.MacOS9, pixData);
+
+    private static PictBitmap Direct32Row(int packType, int cmpCount, PictQuickDraw quickDraw, params byte[] pixData) =>
         PictReader.Decode(PictBuilder.V2(0, 0, 1, 3)
             .U16(0x009A).U16(0).U16(0xFF).U16(0x800C).Rect(0, 0, 1, 3)
             .U16(0).U16(packType).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0)
             .U16(16).U16(32).U16(cmpCount).U16(8).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
             .Rect(0, 0, 1, 3).Rect(0, 0, 1, 3).U16(0)
             .Bytes(pixData).Align()
-            .U16(0x00FF).ToArray());
+            .U16(0x00FF).ToArray(), new PictDecodeOptions { QuickDraw = quickDraw });
 
     [Fact]
     public void Opcode0x92_IsDirectBitsRect()
@@ -225,6 +228,24 @@ public class PictParserTests
             .U8(0).U8(10).U8(20).U8(30)
             .U16(0x00FF).ToArray();
         Assert.Equal(new PictColor(10, 20, 30), PictReader.Decode(pict, new PictDecodeOptions { QuickDraw = PictQuickDraw.MacRom })[0, 0]);
+    }
+
+    [Fact]
+    public void DirectBits32_PackType4_OnMacOS9_OverflowingRowRepeatsItsFirstByte()
+    {
+        // 32 x 1, rowBytes 128, cmpCount 3: n = 96, Mac OS 9's packed buffer holds 96 bytes. A 97-byte row (one
+        // literal run of 96) spills its last byte into the unpack buffer, which its first output byte overwrites, so
+        // pixel 31's blue becomes pixel 0's red (1) instead of 96. The ROM reads it correctly.
+        var b = PictBuilder.V2(0, 0, 1, 32)
+            .U16(0x009A).U16(0).U16(0xFF).U16(0x8080).Rect(0, 0, 1, 32)
+            .U16(0).U16(4).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0)
+            .U16(16).U16(32).U16(3).U16(8).U16(0).U16(0).U16(0).U16(0).U16(0).U16(0)
+            .Rect(0, 0, 1, 32).Rect(0, 0, 1, 32).U16(0)
+            .U8(97).U8(95);
+        for (int i = 1; i <= 96; i++) b.U8(i);
+        var pict = b.Align().U16(0x00FF).ToArray();
+        Assert.Equal(new PictColor(32, 64, 1), PictReader.Decode(pict)[31, 0]);
+        Assert.Equal(new PictColor(32, 64, 96), PictReader.Decode(pict, new PictDecodeOptions { QuickDraw = PictQuickDraw.MacRom })[31, 0]);
     }
 
     [Fact]
@@ -327,8 +348,8 @@ public class PictParserTests
     [Fact]
     public void DirectBits32_PackType4_OnePlaneLandsOnTheBlueByte()
     {
-        // cmpCount 1: the single plane is pixel byte 3.
-        var bmp = Direct32Row(4, 1, 4, 0x02, 0x10, 0x20, 0x30);
+        // cmpCount 1: the single plane is pixel byte 3 (the ROM; Mac OS 9 always reads 3 or 4 planes).
+        var bmp = Direct32Row(4, 1, PictQuickDraw.MacRom, 4, 0x02, 0x10, 0x20, 0x30);
         Assert.Equal(new[] { new PictColor(0, 0, 0x10), new PictColor(0, 0, 0x20), new PictColor(0, 0, 0x30) },
             new[] { bmp[0, 0], bmp[1, 0], bmp[2, 0] });
     }

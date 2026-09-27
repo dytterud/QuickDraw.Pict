@@ -17,7 +17,8 @@ namespace QuickDraw.Pict
         Indexed8,
         /// <summary>16-bit direct, 5 bits per component (packed by words, packType 3).</summary>
         Rgb555,
-        /// <summary>32-bit direct without alpha (component planes packed, packType 4, 3 components).</summary>
+        /// <summary>32-bit direct without alpha (component planes packed, packType 4, 3 components; unpacked when a row
+        /// would not fit Mac OS 9's row buffer).</summary>
         Rgb888,
         /// <summary>32-bit direct with an alpha plane (packType 4, 4 components).</summary>
         Argb8888,
@@ -100,7 +101,8 @@ namespace QuickDraw.Pict
                 bitMap = bits == 1 && palette.Length == 2 && TransferModes.SameRgb(palette[0], new PictColor(255, 255, 255)) &&
                     TransferModes.SameRgb(palette[1], new PictColor(0, 0, 0));
             }
-            if (width > StripWidth) buffered = new List<byte[]>(height);
+            // 32-bit strips are buffered to choose between packed and unpacked rows (see StripFitsMacOS9).
+            if (width > StripWidth || bits == 32) buffered = new List<byte[]>(height);
             WriteHeader();
         }
 
@@ -220,8 +222,9 @@ namespace QuickDraw.Pict
                 for (int left = 0; left < width; left += StripWidth)
                 {
                     int w = Math.Min(StripWidth, width - left);
-                    if (left > 0) BitmapHeader(left, w);
-                    foreach (var row in buffered) WriteStripRow(row, left, w);
+                    bool unpacked = bits == 32 && !StripFitsMacOS9(left, w);
+                    if (left > 0 || bits == 32) BitmapHeader(left, w, unpacked);
+                    foreach (var row in buffered) WriteStripRow(row, left, w, unpacked);
                 }
             }
             if ((written & 1) == 1) U8(0);                  // word-align before OpEndPic
@@ -248,7 +251,20 @@ namespace QuickDraw.Pict
             U32(0);
             U16(0x0001); U16(10); Rect(0, 0, height, width); // clip
             if (options.IccProfile is { Length: > 0 } icc) WriteIccProfile(icc);
-            BitmapHeader(0, Math.Min(width, StripWidth));
+            if (bits != 32) BitmapHeader(0, Math.Min(width, StripWidth), unpacked: false);
+        }
+
+        // Mac OS 9 unpacks component-plane rows through a buffer of (n + (n >> 7) + 3) & ~3 bytes for n unpacked bytes,
+        // and misreads any row packed into more (PixMap.ReadPlanesMacOS9). Incompressible rows need n + n / 128 + 1,
+        // so a strip with such a row is stored unpacked (packType 1) instead.
+        private bool StripFitsMacOS9(int left, int w)
+        {
+            int n = w * (options.Format == PictPixelFormat.Argb8888 ? 4 : 3);
+            int buffer = (n + (n >> 7) + 3) & ~3;
+            if (RowBytes(w) < 8) return true;
+            foreach (var row in buffered!)
+                if (PackBits(PlaneLine(row, left, w)).Length > buffer) return false;
+            return true;
         }
 
         private static uint Fixed(double dpi) => (uint)Math.Round(dpi * 65536);
@@ -271,7 +287,7 @@ namespace QuickDraw.Pict
         }
 
         // The opcode and pixel map fields up to the pixel data, for the strip [left, left + w).
-        private void BitmapHeader(int left, int w)
+        private void BitmapHeader(int left, int w, bool unpacked)
         {
             if ((written & 1) == 1) U8(0);
             int rowBytes = RowBytes(w);
@@ -282,7 +298,7 @@ namespace QuickDraw.Pict
                 U32(0x000000FF);                             // baseAddr
                 U16(rowBytes | 0x8000);
                 Rect(bounds);
-                PixMapFields(packType: bits == 16 ? 3 : 4, pixelType: 16, cmpCount: bits == 16 || options.Format == PictPixelFormat.Rgb888 ? 3 : 4,
+                PixMapFields(packType: bits == 16 ? 3 : unpacked ? 1 : 4, pixelType: 16, cmpCount: bits == 16 || options.Format == PictPixelFormat.Rgb888 ? 3 : 4,
                     cmpSize: bits == 16 ? 5 : 8);
             }
             else
@@ -327,7 +343,7 @@ namespace QuickDraw.Pict
 
         // ---- pixel data ----
 
-        private void WriteStripRow(ReadOnlySpan<byte> row, int left, int w)
+        private void WriteStripRow(ReadOnlySpan<byte> row, int left, int w, bool unpacked = false)
         {
             int rowBytes = RowBytes(w);
             var line = new byte[rowBytes];
@@ -349,7 +365,7 @@ namespace QuickDraw.Pict
                     line[2 * x + 1] = (byte)v;
                 }
             }
-            else if (rowBytes < 8)
+            else if (rowBytes < 8 || unpacked)
             {
                 for (int x = 0; x < w; x++)                  // unpacked 32-bit: alpha (or pad), R, G, B
                 {
@@ -358,21 +374,9 @@ namespace QuickDraw.Pict
                     line[4 * x + 1] = p[0]; line[4 * x + 2] = p[1]; line[4 * x + 3] = p[2];
                 }
             }
-            else
-            {
-                // Component planes, each w bytes: alpha first when stored, then R, G, B.
-                bool alpha = options.Format == PictPixelFormat.Argb8888;
-                int planes = alpha ? 4 : 3, first = alpha ? 0 : 1;
-                line = new byte[w * planes];
-                for (int x = 0; x < w; x++)
-                {
-                    var p = row.Slice(4 * (left + x), 4);
-                    for (int k = 0; k < planes; k++)
-                        line[k * w + x] = (k + first) switch { 0 => p[3], 1 => p[0], 2 => p[1], _ => p[2] };
-                }
-            }
+            else line = PlaneLine(row, left, w);
 
-            if (rowBytes < 8)
+            if (rowBytes < 8 || unpacked)
             {
                 Bytes(line);
                 return;
@@ -380,6 +384,21 @@ namespace QuickDraw.Pict
             var packed = bits == 16 ? PackWords(line) : PackBits(line);
             if (rowBytes > 250) U16(packed.Length); else U8(packed.Length);
             Bytes(packed);
+        }
+
+        // Component planes, each w bytes: alpha first when stored, then R, G, B.
+        private byte[] PlaneLine(ReadOnlySpan<byte> row, int left, int w)
+        {
+            bool alpha = options.Format == PictPixelFormat.Argb8888;
+            int planes = alpha ? 4 : 3, first = alpha ? 0 : 1;
+            var line = new byte[w * planes];
+            for (int x = 0; x < w; x++)
+            {
+                var p = row.Slice(4 * (left + x), 4);
+                for (int k = 0; k < planes; k++)
+                    line[k * w + x] = (k + first) switch { 0 => p[3], 1 => p[0], 2 => p[1], _ => p[2] };
+            }
+            return line;
         }
 
         // PackBits: runs of 3 or more equal bytes as (1 - count, byte), otherwise literal blocks (count - 1, bytes);
