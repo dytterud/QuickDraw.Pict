@@ -110,6 +110,52 @@ public class QuickDrawResourceTests
     }
 
     [Fact]
+    public void PixelPattern_Type2_IsSolidInTheColorOfTableEntry4()
+    {
+        // ppat type 2: PixMap at 28, pixels at 78 (8 bytes), table at 86 with 5 entries; entry 4 = $12xx $34xx $56xx.
+        var b = new PictBuilder().U16(2).U16(0).U16(28).U16(0).U16(78).Zeros(4).U16(0).Zeros(4).Zeros(8);
+        PixMap8x1(b, 86).Bytes(1, 1, 1, 1, 1, 1, 1, 1).U16(0).U16(0).U16(0).U16(4);
+        for (int i = 0; i < 4; i++) b.U16(i).Rgb(0, 0, 0);
+        b.U16(4).Rgb(0x1299, 0x3499, 0x5699);
+        var pattern = QuickDrawResources.DecodePixelPattern(b.ToArray());
+        Assert.Equal((8, 8), (pattern.Width, pattern.Height));
+        Assert.Equal(new PictColor(0x12, 0x34, 0x56), pattern[5, 7]);
+    }
+
+    [Fact]
+    public void IconList_WithoutItsMaskHalf_UsesCalcMask()
+    {
+        // ics# with only the icon: a 4 x 4 black ring at (0..3, 0..3) encloses a white hole, which CalcMask keeps.
+        var data = new byte[32];
+        data[0] = 0xF0; data[2] = 0x90; data[4] = 0x90; data[6] = 0xF0;
+        var icon = QuickDrawResources.DecodeIconList("ics#", data);
+        Assert.Equal(White, icon[1, 1]);                       // enclosed: opaque white
+        Assert.Equal(255, A(icon, 1, 1));
+        Assert.Equal(0, A(icon, 4, 1));                        // reachable from the edge: transparent
+    }
+
+    [Fact]
+    public void ColorCursor_IgnoresThe1BitDataAndXorsUnmaskedPixels()
+    {
+        // crsr: 2-bit 16 x 16 PixMap, table 0 white 1 black 2 red; row 0 pixels 1 (black), 0 (white), 2 (red), 1.
+        // Mask row 0 = $80 (pixel 0 only); the 1-bit data ($FF..) is never read.
+        var b = new PictBuilder().U16(0x8001).U16(0).U16(96).U16(0).U16(146).Zeros(10);
+        for (int i = 0; i < 16; i++) b.U16(0xFFFF);                                            // 1-bit data (unused)
+        b.U16(0x8000); for (int i = 1; i < 16; i++) b.U16(0);                                  // mask
+        b.U16(20).U16(40).Zeros(8);                                                            // hotspot v 20 h 40
+        b.U16(0).U16(0).U16(0x8004).Rect(0, 0, 16, 16).U16(0).U16(0).U16(0).U16(0).U16(0x48).U16(0).U16(0x48).U16(0)
+            .U16(0).U16(2).U16(1).U16(2).U16(0).U16(0).U16(0).U16(210).U16(0).U16(0);           // PixMap, pmTable 210
+        b.U8(0b01001001).Zeros(63);                                                            // pixels (4 bytes x 16)
+        b.U16(0).U16(0).U16(0).U16(2).U16(0).Rgb(0xFFFF, 0xFFFF, 0xFFFF).U16(1).Rgb(0, 0, 0).U16(2).Rgb(0xFFFF, 0, 0);
+        var cursor = QuickDrawResources.DecodeColorCursor(b.ToArray());
+        Assert.Equal(Black, cursor.Image[0, 0]);
+        Assert.Equal(0, cursor.Xor[1]);                                                        // white: transparent
+        Assert.Equal(0x00FFFF, cursor.Xor[2]);                                                 // red XORs cyan
+        Assert.True(cursor.Inverted[3]);                                                       // black inverts
+        Assert.Equal((15, 15), (cursor.HotspotH, cursor.HotspotV));                            // clamped
+    }
+
+    [Fact]
     public void PatternList_AndSmallIcons_DecodeEveryEntry()
     {
         var pats = QuickDrawResources.DecodePatternList(new byte[] { 0, 2, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0, 0, 0 });
