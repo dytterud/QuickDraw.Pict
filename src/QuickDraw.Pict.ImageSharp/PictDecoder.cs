@@ -46,6 +46,7 @@ namespace QuickDraw.Pict.ImageSharp
                 Resolution = options.Resolution,
                 PreserveAlpha = options.PreserveAlpha,
                 QuickDraw = options.QuickDraw,
+                ScreenDepth = options.ScreenDepth,
             };
             PictBitmap bitmap = Guard(() => PictReader.Decode(stream, pictOptions, cancellationToken));
 

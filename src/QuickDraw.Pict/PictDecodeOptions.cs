@@ -47,6 +47,22 @@ namespace QuickDraw.Pict
         /// QuickDraw in the Macintosh ROM.
         /// </summary>
         public PictQuickDraw QuickDraw { get; init; } = PictQuickDraw.MacOS9;
+
+        /// <summary>
+        /// The depth of the screen the picture is drawn on: 32 (the default) draws in full color; 1, 2, 4 and 8 draw into
+        /// an indexed screen with the Macintosh's default color table for that depth (black and white, four greys, the
+        /// 16 and the 256 standard colors), and 16 into a 5-5-5 screen, with QuickDraw's own color matching, transfer
+        /// modes on pixel values and ditherCopy dithering. The result is still RGBA: each pixel the color it has on that
+        /// screen.
+        /// </summary>
+        public int ScreenDepth
+        {
+            get => screenDepth;
+            init => screenDepth = value is 1 or 2 or 4 or 8 or 16 or 32
+                ? value
+                : throw new System.ArgumentOutOfRangeException(nameof(ScreenDepth), value, "The screen depth must be 1, 2, 4, 8, 16 or 32.");
+        }
+        private readonly int screenDepth = 32;
     }
 
     /// <summary>The QuickDraw implementation a picture is drawn as. The two differ in a few rounding and edge rules.</summary>

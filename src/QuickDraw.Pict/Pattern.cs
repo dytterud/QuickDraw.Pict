@@ -10,6 +10,7 @@ namespace QuickDraw.Pict
         public byte[] Mono = new byte[8];
         public PixMap? Pixels;          // PixPat type 1
         public PictColor? Rgb;          // PixPat type 2 (ditherPat)
+        public (ushort r, ushort g, ushort b) Rgb16;   // its exact 16-bit components
 
         public static Pattern Black => FromMono(new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF });
         public static Pattern White => FromMono(new byte[8]);
@@ -24,7 +25,11 @@ namespace QuickDraw.Pict
             int patType = b.ReadU16BE();
             var pattern = FromMono(b.ReadExactly(8));
             if (macOS9 ? patType != 1 && patType != 3 : patType == 2)
-                pattern.Rgb = PictReader.ReadRgb(b);
+            {
+                int r = b.ReadU16BE(), g = b.ReadU16BE(), bl = b.ReadU16BE();
+                pattern.Rgb = new PictColor((byte)(r >> 8), (byte)(g >> 8), (byte)(bl >> 8));
+                pattern.Rgb16 = ((ushort)r, (ushort)g, (ushort)bl);
+            }
             else
                 pattern.Pixels = PixMap.ReadPatternPixMap(b, macOS9);
             return pattern;

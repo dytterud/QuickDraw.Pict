@@ -56,10 +56,44 @@ namespace QuickDraw.Pict
                 }
             }
 
+            bool ditherCopy = (mode & TransferModes.DitherCopy) != 0;
             mode &= ~TransferModes.DitherCopy;
             bool bilevel = src.PixelSize == 1 && IsBlackAndWhite(src.Palette);
             bool keepAlpha = preserveAlpha && src.PixelSize == 32 && src.CmpCount == 4 && mode == TransferModes.SrcCopy;
             int bitCap = 32 * ((srcW - 1) / 32 + 1);          // StretchBits reads whole longs of each source row
+
+            var device = colors.Device;
+            // ditherCopy of a direct source onto an indexed or 16-bit screen: error diffusion over the visible bounds.
+            if (device != null && ditherCopy && src.IsDirect &&
+                TransferModes.Normalize(mode, hilitePending) == TransferModes.SrcCopy)
+            {
+                var visible = area;
+                var rowsCopy = rows;
+                var colsCopy = cols;
+                var copyColors = colors;
+                var b = area.Bounds;
+                // The ROM converts the destination rect's full width; Mac OS 9 the visible bounds.
+                int left = device.MacOS9 ? b.Left : dstRect.Left, right = device.MacOS9 ? b.Right : dstRect.Right;
+                DeviceModes.Dither(canvas, device, b.Top, b.Bottom, left, right, (x, y) =>
+                {
+                    int dy = y - dstRect.Top, dx = x - dstRect.Left;
+                    if (dy < 0 || dy >= dstH || dx < 0 || dx >= dstW) return null;
+                    int[]? group = rowsCopy == null ? new[] { srcTop + dy } : rowsCopy[dy];
+                    if (group == null) return null;
+                    var (first, end) = colsCopy == null ? (dx, dx + 1) : colsCopy[dx];
+                    PictColor color;
+                    if (!scaled)
+                    {
+                        int sy = group[0], sx = srcLeft + first;
+                        if (sy < 0 || sy >= src.Height || sx < 0 || sx >= src.Width) return null;
+                        color = src.GetPixel(sx, sy);
+                    }
+                    else if (!TryDeep(src, group, srcLeft, first, end, macOS9, out color, out _, out _)) return null;
+                    return ApplyColorSource(TransferModes.SrcCopy, false, color, new PictColor(255, 255, 255), copyColors, true,
+                        out var copied) ? copied : null;
+                }, (x, y) => visible.Contains(x, y));
+                return;
+            }
 
             foreach (var r in area.Rectangles())
                 for (int y = r.Top; y < r.Bottom; y++)
@@ -71,6 +105,12 @@ namespace QuickDraw.Pict
                     {
                         int dx = x - dstRect.Left;
                         var (first, end) = cols == null ? (dx, dx + 1) : cols[dx];
+                        if (device != null)
+                        {
+                            CopyPixelOnDevice(canvas, device, src, group, srcLeft, first, end, scaled, bitCap, bilevel, x, y,
+                                mode, hilitePending, colors);
+                            continue;
+                        }
                         var dst = Painter.ReadPixel(canvas, x, y);
                         bool write;
                         PictColor result;
@@ -101,6 +141,39 @@ namespace QuickDraw.Pict
                 }
         }
 
+        // One destination pixel on an indexed or 16-bit screen.
+        private static void CopyPixelOnDevice(PictBitmap canvas, ScreenDevice device, PixMap src, int[] group, int srcLeft,
+            int first, int end, bool scaled, int bitCap, bool bilevel, int x, int y, int mode, bool hilitePending,
+            in PortColors colors)
+        {
+            int m = TransferModes.Normalize(mode, hilitePending);
+            int dst = device.Read(canvas, x, y), value;
+            bool write;
+            if (src.PixelSize == 1)
+            {
+                if (!TryBit(src, group, srcLeft, first, end, scaled ? bitCap : src.Width, scaled, out bool bit)) return;
+                write = bilevel
+                    ? DeviceModes.Bit(m, bit, dst, colors, out value)
+                    : DeviceModes.Source(m, src.Palette[bit ? 1 : 0], false, dst, colors, out value, src.Exact(bit ? 1 : 0));
+            }
+            else
+            {
+                PictColor color;
+                int index = -1;
+                if (!scaled)
+                {
+                    int sy = group[0], sx = srcLeft + first;
+                    if (sy < 0 || sy >= src.Height || sx < 0 || sx >= src.Width) return;
+                    color = src.GetPixel(sx, sy);
+                    if (src.PixelSize <= 8) index = src.GetIndex(sx, sy);
+                }
+                else if (!TryDeep(src, group, srcLeft, first, end, colors.MacOS9, out color, out _, out _, out index)) return;
+                write = DeviceModes.Source(m, color, src.IsDirect, dst, colors, out value,
+                    index >= 0 ? src.Exact(index) : null);
+            }
+            if (write) device.Write(canvas, x, y, value);
+        }
+
         private static bool IsBlackAndWhite(PictColor[] palette) =>
             palette.Length >= 2 && TransferModes.SameRgb(palette[0], new PictColor(255, 255, 255)) &&
             TransferModes.SameRgb(palette[1], new PictColor(0, 0, 0));
@@ -128,8 +201,12 @@ namespace QuickDraw.Pict
         // A scaled deep pixel: the rows then columns of its group merged at the source depth (largest index for 2-8
         // bits; truncated per-component average of 5-bit or 8-bit components for 16 and 32 bits), then converted.
         private static bool TryDeep(PixMap src, int[] rows, int srcLeft, int first, int end, bool macOS9, out PictColor color,
-            out bool averaged, out byte alpha)
+            out bool averaged, out byte alpha) => TryDeep(src, rows, srcLeft, first, end, macOS9, out color, out averaged, out alpha, out _);
+
+        private static bool TryDeep(PixMap src, int[] rows, int srcLeft, int first, int end, bool macOS9, out PictColor color,
+            out bool averaged, out byte alpha, out int index)
         {
+            index = -1;
             color = default;
             averaged = false;
             alpha = 255;
@@ -167,6 +244,7 @@ namespace QuickDraw.Pict
             if (columns == 0) return false;
             if (src.PixelSize <= 8)
             {
+                index = maxIndex;
                 color = maxIndex < src.Palette.Length ? src.Palette[maxIndex] : new PictColor(0, 0, 0);
                 return true;
             }

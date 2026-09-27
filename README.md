@@ -26,6 +26,8 @@ Options go through `PictDecoderOptions` with `PictDecoder.Instance.Decode(...)`:
 | `FontResolver` | Outline font family per QuickDraw font number, for text no bitmap font covers (default: an installed system font). |
 | `Resolution` | `Native` (default) or `PictureFrame` (72 dpi). |
 | `PreserveAlpha` | Keep the alpha channel of 32-bit pixel maps that have one. |
+| `QuickDraw` | `MacOS9` (default) or `MacRom`: which Macintosh QuickDraw to reproduce. |
+| `ScreenDepth` | 32 (default), or 1, 2, 4, 8 or 16 to draw as on that screen (default color table, index-level transfer modes, ditherCopy dithering). |
 
 JPEG, PNG, GIF, TIFF, WebP and BMP QuickTime images inside pictures are decoded with ImageSharp's own decoders.
 

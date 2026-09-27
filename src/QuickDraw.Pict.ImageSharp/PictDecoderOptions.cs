@@ -37,5 +37,11 @@ namespace QuickDraw.Pict.ImageSharp
         /// <see cref="PictDecodeOptions.QuickDraw"/>.
         /// </summary>
         public PictQuickDraw QuickDraw { get; init; } = PictQuickDraw.MacOS9;
+
+        /// <summary>
+        /// The depth of the screen to draw on (1, 2, 4, 8, 16 or 32, the default), for the look of the picture on an
+        /// indexed or thousands-of-colors display; see <see cref="PictDecodeOptions.ScreenDepth"/>.
+        /// </summary>
+        public int ScreenDepth { get; init; } = 32;
     }
 }

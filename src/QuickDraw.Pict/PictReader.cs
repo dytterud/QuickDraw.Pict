@@ -230,10 +230,10 @@ namespace QuickDraw.Pict
                 case 0x0015: port.PnLocHFrac(b.ReadU16BE()); return true;                // PnLocHFrac
                 case 0x0016: port.ChExtra = (short)b.ReadU16BE(); return true;           // ChExtra (4.12 per point)
                 case 0x0010: { var n = ReadPoint(b); var d = ReadPoint(b); port.TextRatio(n.h, n.v, d.h, d.v); return true; }   // TxRatio
-                case 0x000E: port.ForeColor = ClassicColor((int)b.ReadU32BE(), true); return true;       // FgColor
-                case 0x000F: port.BackColor = ClassicColor((int)b.ReadU32BE(), false); return true;      // BkColor
-                case 0x001A: port.ForeColor = ReadRgb(b); return true;                   // RGBFgCol
-                case 0x001B: port.BackColor = ReadRgb(b); return true;                   // RGBBkCol
+                case 0x000E: (port.ForeColor, port.Fore16) = ClassicColor((int)b.ReadU32BE(), true); return true;  // FgColor
+                case 0x000F: (port.BackColor, port.Back16) = ClassicColor((int)b.ReadU32BE(), false); return true; // BkColor
+                case 0x001A: (port.ForeColor, port.Fore16) = ReadRgbExact(b); return true;                          // RGBFgCol
+                case 0x001B: (port.BackColor, port.Back16) = ReadRgbExact(b); return true;                          // RGBBkCol
                 case 0x001C: port.HiliteMode(); return true;                             // HiliteMode
                 case 0x001D: port.HiliteColor = ReadRgb(b); return true;                 // HiliteColor
                 case 0x001E: port.DefaultHilite(); return true;                          // DefHilite
@@ -302,21 +302,28 @@ namespace QuickDraw.Pict
             return new PictColor((byte)(r >> 8), (byte)(g >> 8), (byte)(bl >> 8), 255);
         }
 
-        // Classic 1-bit-era color constants (FgColor/BkColor longs).
-        private static PictColor ClassicColor(int value, bool fore)
+        private static (PictColor, (ushort, ushort, ushort)) ReadRgbExact(BinaryReader b)
         {
-            switch (value)
+            int r = b.ReadU16BE(), g = b.ReadU16BE(), bl = b.ReadU16BE();
+            return (new PictColor((byte)(r >> 8), (byte)(g >> 8), (byte)(bl >> 8), 255), ((ushort)r, (ushort)g, (ushort)bl));
+        }
+
+        // Classic 1-bit-era color constants (FgColor/BkColor longs): on a color port, the QDColors table (clut 127).
+        private static (PictColor, (ushort, ushort, ushort)) ClassicColor(int value, bool fore)
+        {
+            (int r, int g, int b) c = value switch
             {
-                case 30: return new PictColor(255, 255, 255, 255);  // whiteColor
-                case 33: return new PictColor(0, 0, 0, 255);        // blackColor
-                case 69: return new PictColor(252, 243, 5, 255);    // yellowColor
-                case 137: return new PictColor(241, 0, 144, 255);   // magentaColor
-                case 205: return new PictColor(221, 8, 6, 255);     // redColor
-                case 273: return new PictColor(2, 171, 234, 255);   // cyanColor
-                case 341: return new PictColor(0, 100, 18, 255);    // greenColor
-                case 409: return new PictColor(0, 0, 212, 255);     // blueColor
-                default: return fore ? new PictColor(0, 0, 0, 255) : new PictColor(255, 255, 255, 255);
-            }
+                30 => (0xFFFF, 0xFFFF, 0xFFFF),     // whiteColor
+                33 => (0, 0, 0),                    // blackColor
+                69 => (0xFC00, 0xF37D, 0x052F),     // yellowColor
+                137 => (0xF2D7, 0x0856, 0x84EC),    // magentaColor
+                205 => (0xDD6B, 0x08C2, 0x06A2),    // redColor
+                273 => (0x0241, 0xAB54, 0xEAFF),    // cyanColor
+                341 => (0x0000, 0x8000, 0x11B0),    // greenColor
+                409 => (0x0000, 0x0000, 0xD400),    // blueColor
+                _ => fore ? (0, 0, 0) : (0xFFFF, 0xFFFF, 0xFFFF),
+            };
+            return (new PictColor((byte)(c.r >> 8), (byte)(c.g >> 8), (byte)(c.b >> 8), 255), ((ushort)c.r, (ushort)c.g, (ushort)c.b));
         }
 
         // A Polygon: u16 polySize + bounding Rect + (polySize - 10) / 4 Points, returned as (h, v) picture points.

@@ -353,19 +353,19 @@ layout as above with a PixMap and **no ColorTable**.
 
 ### 4.7 Classic colour constants (FgColor / BkColor)
 
-| Constant | Colour | RGB used |
+| Constant | Colour | RGB (16-bit) |
 |---|---|---|
-| 30 | whiteColor | FF FF FF |
-| 33 | blackColor | 00 00 00 |
-| 69 | yellowColor | FC F3 05 |
-| 137 | magentaColor | F1 00 90 |
-| 205 | redColor | DD 08 06 |
-| 273 | cyanColor | 02 AB EA |
-| 341 | greenColor | 00 64 12 |
-| 409 | blueColor | 00 00 D4 |
+| 30 | whiteColor | FFFF FFFF FFFF |
+| 33 | blackColor | 0000 0000 0000 |
+| 69 | yellowColor | FC00 F37D 052F |
+| 137 | magentaColor | F2D7 0856 84EC |
+| 205 | redColor | DD6B 08C2 06A2 |
+| 273 | cyanColor | 0241 AB54 EAFF |
+| 341 | greenColor | 0000 8000 11B0 |
+| 409 | blueColor | 0000 0000 D400 |
 
-Any other value gives black as a foreground colour and white as a background colour. The RGB values are the standard
-colour-QuickDraw equivalents.
+Any other value gives black as a foreground colour and white as a background colour. On a colour port, ForeColor and
+BackColor set these RGB colours from the QDColors table (`clut` 127 in the ROM).
 
 ---
 
@@ -1643,11 +1643,7 @@ A picture that every PICT reader, and the ROM, decodes identically:
 - **QuickTime mattes, rotation and skew.** Images are placed in their bounding box, and the matte is ignored.
 - **Mac OS 9 details not yet pinned down** (see the end of §17).
 
-**Not applicable.** These exist only for other destinations than the 32-bit canvas modelled here:
-
-- **Dithering.** It happens only when drawing to screens of 8 bits or fewer.
-- **Synthetic colour strikes.** The Macintosh builds deep copies of 1-bit strikes only on 2–8-bit screens; on 16- and
-  32-bit screens, text stays 1-bit, as it is drawn here.
+Drawing on 1–16-bit screens (dithering, indexed transfer modes) is covered in §19.
 
 ---
 
@@ -1849,7 +1845,31 @@ the same structures. All are big-endian.
 - `clut` 8 is the 6×6×6 cube **without black** (215 entries, white first, red slowest), then red, green, blue and
   gray ramps of `EE DD BB AA 88 77 55 44 22 11`, then **black at 255**.
 - There is no mask in the resource. The mask of the 1-bit icon list with the same id and size (`ICN#`, `ics#`,
-  `icm#`) applies.
+  `icm#`) applies. Without an icon list the Icon Utilities draw nothing (noMaskFoundErr, −1000). An all-zero mask
+  draws nothing.
+- **An icon list without its mask half** (the resource is only the icon) gets a computed mask, CalcMask:
+  - flood-fill the white pixels 4-connected to the edges;
+  - the mask is every pixel the flood did not reach, which is the icon's silhouette including enclosed holes.
+- **Which icon is drawn** (PlotIconID and the icon suites, Mac OS 9):
+  - The mask group depends on the rect size:
+    - 48 or more: `ich#`.
+    - Under 32 and taller than 12: `ics#`, then `ICN#`, then `icm#`.
+    - Under 32 otherwise: `icm#`, `ics#`, `ICN#`.
+    - Otherwise: `ICN#` first.
+  - The colour data comes only from the mask's group, by screen depth:
+    - 16/32 bits: `il32`, `icl8`, `icl4`, `ICN#`;
+    - 8 bits: `icl8`, `il32`, `icl4`, `ICN#`;
+    - 4 bits: `icl4`, `ICN#`;
+    - 1–2 bits: `ICN#`.
+  - Plain drawing copies the data through the mask, with no transform.
+  - Transforms:
+    - selected: Darken halves each component, then halves the smallest, then the smaller of the other two unless they
+      are equal (±$200);
+    - disabled: `(c + $FFFF) >> 1`.
+- **`cicn`** (PlotCIcon):
+  - fore/back are forced to black/white;
+  - the 1-bit BitMap is drawn if it exists and the screen depth is at most 2, else the PixMap;
+  - the mask is the icon mask.
 
 **Cursors:**
 
@@ -1889,7 +1909,13 @@ the same structures. All are big-endian.
   | 88 | 8 | reserved |
 
 - The PixMap's pmTable is the offset of its ColorTable.
-- Mask 1 paints the colour pixel. Mask 0 is transparent, or inverts the screen where the 1-bit data is 1.
+- SetCCursor **never reads the 1-bit data**. The cursor is drawn as `screen = (screen AND NOT mask) XOR image`:
+  - Mask 1: the colour pixel, converted to the screen depth.
+  - Mask 0 on a 16/32-bit screen: the screen is XORed with the pixel's complement. White is transparent, black
+    inverts, other colours XOR their complement.
+  - Mask 0 on a screen of 8 bits or fewer: the screen index is XORed with the pixel's index.
+- A `CURS`'s data bit 1 under mask 0 inverts (complements) the screen.
+- Hotspots are clamped to 0..15.
 
 **`ppat`** (pixel pattern):
 
@@ -1903,10 +1929,182 @@ the same structures. All are big-endian.
   | 10 | 10 | reserved |
   | 20 | 8 | the 1-bit pattern |
 
-- Types 1 and 3 decode the PixMap. Its pmTable is the offset of the ColorTable, which must lie at or after the end
-  of the pixels; pmTable 0 (or a table before the pixel end) makes GetPixPat fail, so the resource does not load.
-- Type 0: Mac OS 9 fills the pattern from the **first 8 bytes of the pixel data** (at the pixels offset), not from
-  the 1-bit pattern at offset 20.
-- Other types (2) use the 1-bit pattern at offset 20.
-- **`ppt#`:** a u16 count, then that many u32 offsets to `ppat` data.
+- The pixel data runs from the pixels offset to pmTable. A table before the pixel data makes GetPixPat fail, so the
+  resource does not load. The ColorTable (at pmTable) is read unless the PixMap is RGB direct (pixelType 16).
+- Types 1 and 3 decode the PixMap.
+- Type 0: the pattern is the **first 8 bytes of the pixel data** (at the pixels offset), not the 1-bit pattern at
+  offset 20.
+- Type 2 (RGB): the colour is the ColorTable's **entry 4** (table + $2A); the resource's pixels are ignored.
+  - A 32-bit screen draws it solid.
+  - Other depths draw PatDither's 2×2 cell (§19).
+- Mac OS 9 fails to load types above 3.
+- **`ppt#`:** a u16 count, then that many u32 offsets from the resource start. Each element is a complete flattened
+  `ppat`, whose own offsets are relative to the element's start; element i ends where element i+1 begins.
+
+---
+
+## 19. Screen depths
+
+A picture drawn on a 1, 2, 4, 8 or 16-bit screen looks different. For indexed depths, QuickDraw works on colour-table
+indices, and ditherCopy dithers.
+
+- **The screen:** a GWorld of that depth with its default colour table:
+  - 1 bit: white, black;
+  - 2 bits: greys FFFF, ACAC, 5555, 0000;
+  - 4 bits: `clut` 4;
+  - 8 bits: `clut` 8;
+  - 16 bits: 5-5-5 pixels, bit 15 zero.
+- **Output:** each pixel is the colour of its entry. 16-bit pixels get each 5-bit field replicated to 8 bits:
+  `(c << 3) | (c >> 2)`.
+- Everything below is verified pixel for pixel against Mac OS 9.
+
+### 19.1 RGB to index
+
+**The inverse table (MakeITable, resolution 4).**
+
+1. Take a cube of 18³ cells: a 1-cell border and 16³ interior cells.
+2. Seed the entries in this order: entry 0, the last entry, then entries 1..n−1. Each seed goes to cell
+   `(R8 >> 4, G8 >> 4, B8 >> 4)` + 1 on each axis.
+3. The first entry to reach a cell owns it. A later entry is a hidden colour, chained to the owner.
+4. Fill breadth-first from the seeds, in neighbour order +B, −B, +G, −G, +R, −R. An empty neighbour takes the
+   colour and joins the queue.
+5. The table is the 4096 interior cells, red most significant.
+
+The standard `clut` 4 and 8 have no hidden colours at resolution 4.
+
+**Grey tables** (`clut` 1 and 2) map luminance to an entry:
+1. Put each entry at its red byte (the lowest index wins on equal reds).
+2. Fill the gaps by alternating left-to-right and right-to-left passes, each copying a neighbour, until none is left.
+   This gives the nearest entry, with exact ties going to the darker one.
+
+**The lookups:**
+
+| Where | Colour screens | Grey screens | 16 bits |
+|---|---|---|---|
+| Direct pixels copied (srcCopy, and Boolean results of direct sources) | `table[(R>>4)<<8 \| (G>>4)<<4 \| B>>4]` | `links[(5R+9G+2B) >> 4]` | `c >> 3` |
+| Arithmetic and colorized results | the same | `links[(5(R&$F0) + 9(G&$F0) + 2(B&$F0)) >> 4]` (the cell's corner) | `c >> 3` |
+| Color2Index (fore, back, hilite, indexed sources) | the table, then the hidden-colour chain (Mac OS 9: nearest by Manhattan distance on 16-bit components) | Mac OS 9 `links[(5R+9G+2B) >> 12]` on 16-bit components; ROM `links[((((R+G)/2 + B)/2 + R)/2 + G)/2 >> 8]` | `c16 >> 11` |
+
+### 19.2 The port's indices
+
+- **Fore and back:**
+  - fgI = Color2Index(fore) and bkI = Color2Index(back), from the exact 16-bit colours. The classic `FgColor`/`BkColor`
+    constants map to the QDColors table (§4.7).
+  - On 1- and 2-bit screens, if fgI = bkI while the colours differ, fgI = Color2Index(complement of fore). For example,
+    yellow on white draws black on a 1-bit screen.
+- **Hilite:** hiI = Color2Index(hilite). If that equals bkI, use Color2Index of the complement instead.
+
+### 19.3 Transfer modes on indices
+
+Let M = 2^depth − 1 (on 16 bits, M = $7FFF). The not modes invert the source bit or source index first.
+
+**1-bit sources and 1-bit patterns:**
+
+| Mode | Result |
+|---|---|
+| copy | on → fgI, off → bkI |
+| or | on → fgI |
+| bic | on → bkI |
+| xor | on → d ⊕ M |
+
+**Indexed sources:**
+
+- **copy:** `Color2Index((rgb & back) | (~rgb & fore))` on 16-bit components; notSrcCopy complements rgb first.
+  - When the §19.2 collision rule replaced fgI, the fore colour here is fgI's colour.
+- **or / bic / xor:** convert the source with Color2Index to s, then:
+  - or: `(s & fgI) | (~s & d)`;
+  - bic: `(s & bkI) | (~s & d)`;
+  - xor: `d ^ s`.
+
+**Direct sources:**
+- The 32-bit rules (§10), applied to the screen colour of d.
+- Then the table (Mac OS 9 colorizing included).
+- On 16 bits, Mac OS 9 colorizes on 5-bit fields:
+  - copy: `((32 − s)·F + (s + 1)·B) >> 5`;
+  - or / bic: `((32 − s)·C + (s + 1)·d) >> 5`.
+
+**Pixel patterns:**
+- Each colour is converted to a value p: Color2Index for indexed patterns, the table for direct ones.
+- Then fore = all ones and back = 0: copy p, or `d | p`, xor `d ^ p`, bic `d & ~p`.
+
+**RGB patterns (type 2):** PatDither builds a 2×2 cell with the layout below. Pixel (x, y) takes cell
+`[(y & 1) · 2 + (x & 1)]`, with the pattern alignment applied.
+
+```
+0 1
+2 3
+```
+
+1. Fill the slots in the order 0, 1, 3, 2.
+2. Keep running 16-bit totals, starting at 0. For each slot:
+   1. Add the colour to the totals.
+   2. `i = Color2Index(clamp(total, 0, $FFFF))`.
+   3. Subtract Index2Color(i) from the totals.
+3. Index2Color on 16 bits replicates each field: `(c << 11) | (c << 6) | (c << 1) | (c >> 4)`.
+
+**Arithmetic modes:**
+- An indexed source is first converted to its screen index, and its colour is that entry's colour.
+- Apply the §10.4 operation (Mac OS 9 rounding) to the source colour and d's colour.
+- Convert the result with the arithmetic lookup (§19.1).
+- **16 bits:** 5-bit fields, with these rules:
+  - blend: `(s·w + d·(65536 − w) + $8000) >> 16`; the average `(s + d) >> 1` only when all three weights are
+    $7F80..$807F;
+  - pins at the OpColor's top 5 bits;
+  - addOver and subOver are modulo 32.
+
+**transparent, hilite, invert, 1-bit screens:**
+- **transparent:** writes s when s ≠ bkI.
+- **hilite:** where s ≠ bkI, d = bkI becomes hiI and d = hiI becomes bkI.
+- **Invert:** `d ^ M`.
+- **1-bit screens:** the arithmetic modes 32–39 become srcCopy, srcBic, srcXor, srcOr, srcOr, srcBic, srcXor, srcOr,
+  and hilite becomes xor.
+
+### 19.4 ditherCopy
+
+Only CopyBits of a direct source in srcCopy with the ditherCopy flag (64) dithers. Every other depth reduction
+truncates.
+
+**Mac OS 9:**
+- **Scope:** rows of the visible bounds, starting at the top, serpentine with the first row left to right. The error
+  buffer and the carry start at 0 for each call.
+- **Per pixel:**
+  - `v = clamp(c + carry + buf[x], 0, 255)` per component.
+  - Choose the entry with the table.
+  - `e = v − (the entry's 8-bit colour)`.
+  - `carry = e >> 1` (floor).
+  - `buf[x] = e − (e >> 1)`, stored as a signed byte, so +128 wraps.
+- **Clipped pixels** reset `buf[x]` and the carry.
+- **16 bits:** the error is v's low 3 bits.
+- **Grey screens:** dither the luminance `(5R+9G+2B) >> 4` against the entry's blue byte.
+- **1 bit:** black when v < 128, with error v or v − 255.
+
+**ROM:**
+- **Scope:** rows from the first visible one, always across the destination rect's full width. Clipped pixels are
+  converted but not drawn.
+- **Error split:** `buf[x] = e >> 1` (floor) and `carry = (e >> 1) + (e & 1)` (ceil), with no wrapping.
+- **Grey screens:** luminance `((R + G + 2B)/4 + R + 2G)/4`, against the entry's red byte.
+- **16 bits:** ordered, `min(c + D[row & 3][x & 3], 255) >> 3`, with rows counted from the first visible one and x
+  from the rect's left:
+
+  ```
+  D = 0 5 1 4
+      6 3 7 2
+      1 4 0 5
+      7 2 6 3
+  ```
+
+### 19.5 Text
+
+- **Mac OS 9:** 1-bit text on indexed screens follows §19.3.
+- **ROM synthetic strikes (2–8 bits):**
+  - Glyph bits map to Color2Index(black) and to Color2Index(white), which is 0.
+  - On the standard tables this gives the same pixels as expanding the 1-bit strike, so they are not modelled
+    separately.
+- **Not yet verified:** the ROM's arithmetic-mode text on indexed screens (colorizing stripped, ink = the black
+  index).
+
+### 19.6 Not covered
+
+- **QuickTime images on indexed screens:** the Image Compression Manager's codecs dither to the screen themselves.
+- **Custom screen colour tables and search procs.**
 

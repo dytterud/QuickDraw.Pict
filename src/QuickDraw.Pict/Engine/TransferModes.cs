@@ -6,13 +6,29 @@ namespace QuickDraw.Pict
     // (and which QuickDraw's rounding rules the blitters follow).
     internal readonly struct PortColors
     {
-        public PortColors(PictColor fore, PictColor back, (ushort r, ushort g, ushort b) op, PictColor hilite, bool macOS9)
+        public PortColors(PictColor fore, PictColor back, (ushort r, ushort g, ushort b) op, PictColor hilite, bool macOS9,
+            ScreenDevice? device = null, (ushort r, ushort g, ushort b)? fore16 = null, (ushort r, ushort g, ushort b)? back16 = null)
         {
-            Fore = fore; Back = back; Op = op; Hilite = hilite; MacOS9 = macOS9;
+            Fore = fore; Back = back; Op = op; Hilite = hilite; MacOS9 = macOS9; Device = device;
+            Fore16 = fore16 ?? ((ushort)(fore.R * 257), (ushort)(fore.G * 257), (ushort)(fore.B * 257));
+            Back16 = back16 ?? ((ushort)(back.R * 257), (ushort)(back.G * 257), (ushort)(back.B * 257));
+            FgIndex = BkIndex = HiliteIndex = 0;
+            if (device == null) return;
+            // The port's indices (Color2Index when the colors are set). On 1- and 2-bit screens a foreground that maps
+            // to the background's index although the colors differ takes its inverse's index instead.
+            FgIndex = device.Color2Index(Fore16.r, Fore16.g, Fore16.b);
+            BkIndex = device.Color2Index(Back16.r, Back16.g, Back16.b);
+            if (device.Depth <= 2 && FgIndex == BkIndex && Fore16 != Back16)
+                FgIndex = device.Color2Index(0xFFFF - Fore16.r, 0xFFFF - Fore16.g, 0xFFFF - Fore16.b);
+            HiliteIndex = device.Color2Index(hilite);
+            if (HiliteIndex == BkIndex) HiliteIndex = device.Color2Index(TransferModes.Invert(hilite));
         }
         public readonly PictColor Fore, Back, Hilite;
         public readonly (ushort r, ushort g, ushort b) Op;
         public readonly bool MacOS9;
+        public readonly ScreenDevice? Device;                 // null: the 32-bit canvas
+        public readonly (ushort r, ushort g, ushort b) Fore16, Back16;   // the exact fore and back colors
+        public readonly int FgIndex, BkIndex, HiliteIndex;    // on the device
     }
 
     // QuickDraw transfer modes on a 32-bit direct destination, per Inside Macintosh: Imaging With QuickDraw:

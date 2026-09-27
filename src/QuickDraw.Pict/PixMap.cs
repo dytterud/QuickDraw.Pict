@@ -20,6 +20,16 @@ namespace QuickDraw.Pict
         public bool IsPixMap;
         public bool MacOS9;                          // read the pixel data as Mac OS 9's QuickDraw does
         public PictColor[] Palette = Array.Empty<PictColor>();
+        // The color table's exact 16-bit components, when read from one (else empty: the palette's bytes replicated).
+        public (ushort r, ushort g, ushort b)[] Palette16 = Array.Empty<(ushort, ushort, ushort)>();
+
+        // A palette entry's 16-bit components.
+        public (int r, int g, int b) Exact(int index)
+        {
+            if (index < Palette16.Length) return Palette16[index];
+            var c = index < Palette.Length ? Palette[index] : new PictColor(0, 0, 0);
+            return (c.R * 257, c.G * 257, c.B * 257);
+        }
         public byte[] Data = Array.Empty<byte>();
 
         public int Width => Bounds.Width;
@@ -93,7 +103,7 @@ namespace QuickDraw.Pict
             if (pm.IsPixMap)
             {
                 pm.ReadPixMapFields(b);
-                if (!macOS9 || pm.PixelSize < 9) pm.Palette = ReadColorTable(b, pm.PixelSize);
+                if (!macOS9 || pm.PixelSize < 9) (pm.Palette, pm.Palette16) = ReadColorTableExact(b, pm.PixelSize);
             }
             else
             {
@@ -110,7 +120,7 @@ namespace QuickDraw.Pict
             var pm = new PixMap { RowBytes = rawRowBytes & RowBytesMask, IsPixMap = true, MacOS9 = macOS9 };
             pm.Bounds = b.ReadRectBE();
             pm.ReadPixMapFields(b);
-            if (macOS9 && pm.PixelSize < 9) pm.Palette = ReadColorTable(b, pm.PixelSize);
+            if (macOS9 && pm.PixelSize < 9) (pm.Palette, pm.Palette16) = ReadColorTableExact(b, pm.PixelSize);
             return pm;
         }
 
@@ -121,7 +131,7 @@ namespace QuickDraw.Pict
             var pm = new PixMap { RowBytes = rawRowBytes & RowBytesMask, IsPixMap = true, MacOS9 = macOS9 };
             pm.Bounds = b.ReadRectBE();
             pm.ReadPixMapFields(b);
-            if (!macOS9 || pm.PixelSize < 9) pm.Palette = ReadColorTable(b, pm.PixelSize);
+            if (!macOS9 || pm.PixelSize < 9) (pm.Palette, pm.Palette16) = ReadColorTableExact(b, pm.PixelSize);
             pm.ReadPixData(b);
             return pm;
         }
@@ -148,13 +158,16 @@ namespace QuickDraw.Pict
 
         // ColorTable: ctSeed, ctFlags, ctSize (entries - 1), then (value, RGB) entries. A device table (ctFlags bit 15)
         // is indexed by position; otherwise each entry's value is its pixel index. Unlisted indices are black.
-        internal static PictColor[] ReadColorTable(BinaryReader b, int pixelSize)
+        internal static PictColor[] ReadColorTable(BinaryReader b, int pixelSize) => ReadColorTableExact(b, pixelSize).palette;
+
+        internal static (PictColor[] palette, (ushort r, ushort g, ushort b)[] exact) ReadColorTableExact(BinaryReader b, int pixelSize)
         {
             b.ReadU32BE();                                           // ctSeed
             int ctFlags = b.ReadU16BE();
             int ctSize = b.ReadU16BE();
             bool positional = (ctFlags & 0x8000) != 0;
             var palette = new PictColor[1 << Math.Min(pixelSize, 8)];
+            var exact = new (ushort r, ushort g, ushort b)[palette.Length];
             for (int i = 0; i < palette.Length; i++) palette[i] = new PictColor(0, 0, 0);
             for (int i = 0; i <= ctSize; i++)
             {
@@ -162,9 +175,12 @@ namespace QuickDraw.Pict
                 int r = b.ReadU16BE(), g = b.ReadU16BE(), bl = b.ReadU16BE();
                 int index = positional ? i : value;
                 if (index >= 0 && index < palette.Length)
+                {
                     palette[index] = new PictColor((byte)(r >> 8), (byte)(g >> 8), (byte)(bl >> 8));
+                    exact[index] = ((ushort)r, (ushort)g, (ushort)bl);
+                }
             }
-            return palette;
+            return (palette, exact);
         }
 
         // PixData into the in-memory layout, as the ROM's pixel-data readers (GetPMData / GetDirectPMData) do: rows

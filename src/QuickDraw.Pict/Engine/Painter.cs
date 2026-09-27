@@ -20,6 +20,11 @@ namespace QuickDraw.Pict
             if (area.IsEmpty) return;
             int m = TransferModes.Normalize(mode, hilitePending);
             bool colorPattern = pattern.Pixels != null || pattern.Rgb != null;
+            if (colors.Device != null)
+            {
+                FillRegionOnDevice(canvas, area, pattern, align, m, colors);
+                return;
+            }
 
             // Hilite through a pattern whose rows are all solid: RgnBlt (a non-rectangular area) hilites the whole area
             // when any row is solid foreground; BitBlt (a rectangle) follows the pattern.
@@ -76,8 +81,48 @@ namespace QuickDraw.Pict
                     for (int x = r.Left; x < r.Right; x++)
                     {
                         bool bit = bits[(y - top) * width + (x - left)] != 0;
-                        if (TransferModes.ApplyBit(m, bit, ReadPixel(canvas, x, y), colors, out var result))
+                        if (colors.Device is { } device)
+                        {
+                            if (DeviceModes.Bit(m, bit, device.Read(canvas, x, y), colors, out int value))
+                                device.Write(canvas, x, y, value);
+                        }
+                        else if (TransferModes.ApplyBit(m, bit, ReadPixel(canvas, x, y), colors, out var result))
                             WritePixel(canvas, x, y, result);
+                    }
+        }
+
+        // On an indexed or 16-bit screen: 1-bit patterns draw fg / bk indices; a pixel pattern's colors become device
+        // values (Color2Index for indexed patterns, the inverse table for direct ones; an RGB pattern is PatDither's 2 x 2
+        // cell, solid only at 32 bits) drawn with fg all ones and bk 0.
+        private static void FillRegionOnDevice(PictBitmap canvas, Region area, Pattern pattern, (int h, int v) align, int m,
+            in PortColors colors)
+        {
+            var device = colors.Device!;
+            int[]? cell = pattern.Rgb != null ? device.PatDither(pattern.Rgb16) : null;
+            var pixels = pattern.Rgb == null ? pattern.Pixels : null;
+            foreach (var r in area.Rectangles())
+                for (int y = r.Top; y < r.Bottom; y++)
+                    for (int x = r.Left; x < r.Right; x++)
+                    {
+                        int dst = device.Read(canvas, x, y), value;
+                        bool write;
+                        if (cell != null)
+                        {
+                            int p = cell[(((y + align.v) & 1) << 1) | ((x + align.h) & 1)];
+                            write = DeviceModes.PatternValue(m, p, device.ColorOf(p), dst, colors, out value);
+                        }
+                        else if (pixels != null)
+                        {
+                            var c = PatternPixel(pixels, x + align.h, y + (colors.MacOS9 ? align.v : 0));
+                            int p = pixels.IsDirect ? device.Lookup(c) : device.Color2Index(c);
+                            write = DeviceModes.PatternValue(m, p, c, dst, colors, out value);
+                        }
+                        else
+                        {
+                            bool bit = ((pattern.Mono[(y + align.v) & 7] >> (7 - ((x + align.h) & 7))) & 1) != 0;
+                            write = DeviceModes.Bit(m, bit, dst, colors, out value);
+                        }
+                        if (write) device.Write(canvas, x, y, value);
                     }
         }
 

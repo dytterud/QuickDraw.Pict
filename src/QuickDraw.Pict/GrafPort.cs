@@ -21,6 +21,7 @@ namespace QuickDraw.Pict
         // and a white background pattern, text mode srcOr, OpColor black.
         public PictColor ForeColor = new PictColor(0, 0, 0);
         public PictColor BackColor = new PictColor(255, 255, 255);
+        public (ushort r, ushort g, ushort b) Fore16, Back16 = (0xFFFF, 0xFFFF, 0xFFFF);   // their exact components
         public (ushort r, ushort g, ushort b) OpColor;
         public PictColor HiliteColor;
         private bool hilitePending;
@@ -59,13 +60,15 @@ namespace QuickDraw.Pict
             fromRect = pictureFrame;
             toRect = new PictRect(0, 0, canvas.Height, canvas.Width);
             macOS9 = options.QuickDraw == PictQuickDraw.MacOS9;
+            device = ScreenDevice.For(options.ScreenDepth, macOS9);
             HiliteColor = SystemHilite;
             textNumer = (toRect.Width, toRect.Height);
             textDenom = (fromRect.Width, fromRect.Height);
         }
 
-        private PortColors Colors => new PortColors(ForeColor, BackColor, OpColor, HiliteColor, macOS9);
+        private PortColors Colors => new PortColors(ForeColor, BackColor, OpColor, HiliteColor, macOS9, device, Fore16, Back16);
         private readonly bool macOS9;
+        private readonly ScreenDevice? device;
 
         // DrawPicture starts the pattern alignment at (0, 0) and the Origin opcode adds its dh, dv to it.
         private (int h, int v) PatternAlign => (patAlignH, patAlignV);
@@ -437,7 +440,7 @@ namespace QuickDraw.Pict
             if (Distance(grayWide, mid) < Distance(grayWide, bk) / 2 && Distance(grayWide, mid) < Distance(grayWide, fg) / 2)
             {
                 penFrac = TextDrawer.Draw(canvas, font, text, x, y, penFrac, charExtra, TransferModes.SrcOr, clip,
-                    hilitePending, new PortColors(gray, BackColor, OpColor, HiliteColor, macOS9));
+                    hilitePending, new PortColors(gray, BackColor, OpColor, HiliteColor, macOS9, device));
                 return;
             }
             int width = (short)(TextDrawer.Measure(font, text, charExtra) >> 16);
