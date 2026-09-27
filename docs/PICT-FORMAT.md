@@ -1639,11 +1639,31 @@ A picture that every PICT reader, and the ROM, decodes identically:
 
 ## 16. Not covered
 
-- **TrueType (`sfnt`) text.** It goes to the outline fallback.
-- **QuickTime mattes, rotation and skew.** Images are placed in their bounding box, and the matte is ignored.
-- **Mac OS 9 details not yet pinned down** (see the end of §17).
+Everything this document knows about but QuickDraw.Pict does not reproduce, in one place.
 
-Drawing on 1–16-bit screens (dithering, indexed transfer modes) is covered in §19.
+**Text**
+- **TrueType (`sfnt`) text.** It goes to the outline fallback. On Mac OS 9 this includes stretched text whose folded
+  size has no bitmap strike (§17.4).
+- **Stretched text edge cases** (§17.4): banding (a text buffer over 32 KB) and run splits restart the rounding per
+  band; outline and shadow shrink the rect by 1 first.
+- **The ROM's arithmetic-mode text on indexed screens** is not verified (§19.5).
+
+**Mac OS 9 quirks found in code but not reproduced** (§17.5)
+- Corrupted italic rows that need shifts of 32 bits or more.
+- A clipped reduction's right-edge span that is one column short.
+- A destination rect past the pixel map's bounds picking its scaling routine from truncated widths.
+
+**Screens** (§19.6)
+- Custom screen colour tables and search procs.
+- QuickTime images on indexed screens, which the codecs dither themselves.
+
+**QuickTime**
+- Mattes, rotation and skew. Images are placed in their bounding box, and the matte is ignored.
+
+**Resources** (§18)
+- Icon suites: choosing a member by rect size and screen depth, and the selected, disabled, label, offline and open
+  transforms, are described but not implemented. The decoders take one resource at a time.
+- The 48 × 48 and 32-bit icon types (`ich#`, `il32`, `l8mk` and relatives) and `icns` are not decoded.
 
 ---
 
@@ -1852,7 +1872,7 @@ the same structures. All are big-endian.
 - **An icon list without its mask half** (the resource is only the icon) gets a computed mask, CalcMask:
   - flood-fill the white pixels 4-connected to the edges;
   - the mask is every pixel the flood did not reach, which is the icon's silhouette including enclosed holes.
-- **Which icon is drawn** (PlotIconID and the icon suites, Mac OS 9):
+- **Which icon is drawn** (PlotIconID and the icon suites, Mac OS 9; described, not implemented — §16):
   - The mask group depends on the rect size:
     - 48 or more: `ich#`.
     - Under 32 and taller than 12: `ics#`, then `ICN#`, then `icm#`.
