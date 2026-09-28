@@ -19,6 +19,9 @@ internal sealed class PictBuilder
     public PictBuilder U16(int v) { bytes.Add((byte)(v >> 8)); bytes.Add((byte)v); return this; }
     public PictBuilder Rect(int top, int left, int bottom, int right) => U16(top).U16(left).U16(bottom).U16(right);
     public PictBuilder Point(int v, int h) => U16(v).U16(h);
+
+    // The Origin opcode: dh first, then dv (unlike a Point).
+    public PictBuilder Origin(int dh, int dv) => U16(0x000C).U16(dh).U16(dv);
     public PictBuilder Rgb(int r, int g, int b) => U16(r).U16(g).U16(b);
     public PictBuilder Text(string s) { U8(s.Length); bytes.AddRange(Encoding.ASCII.GetBytes(s)); return this; }
     public PictBuilder Bytes(params byte[] data) { bytes.AddRange(data); return this; }

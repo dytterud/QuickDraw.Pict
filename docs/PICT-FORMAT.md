@@ -148,7 +148,7 @@ reserved ranges are given, and they differ from Inside Macintosh in places (mark
 | 0009 | PnPat | 8 bytes | Pen pattern (1-bit) |
 | 000A | FillPat | 8 bytes | Fill pattern (1-bit) |
 | 000B | OvSize | Point | Round-rect corner oval size (scaled like the pen) |
-| 000C | Origin | Point (dv, dh) | Shift the drawing space (§6.4) |
+| 000C | Origin | i16 dh, i16 dv (not a Point: h first) | Shift the drawing space (§6.4) |
 | 000D | TxSize | u16 | Text size in points |
 | 000E | FgColor | u32 | Classic foreground colour constant (§4.6) |
 | 000F | BkColor | u32 | Classic background colour constant |
@@ -459,8 +459,10 @@ result = (short)(d + toLo)
 
 ### 6.4 Origin
 
-The Origin opcode's `(dv, dh)` moves fromRect by (dh, dv). All later coordinates therefore land dh, dv further up
-and left. It also:
+The Origin opcode's operands are `dh` then `dv` (two `i16`, horizontal first: not a Point), as Mac OS 9.0's
+DrawPicture reads them. It adds dh to fromRect's left and right and dv to its top and bottom, cumulatively
+(each Origin adds to the previous shift until the next DrawPicture). All later coordinates therefore land dh, dv further
+up and left. It also:
 
 - adds (dh, dv) to the **pattern alignment** (patAlign);
 - re-maps the current clip (kept in picture coordinates).

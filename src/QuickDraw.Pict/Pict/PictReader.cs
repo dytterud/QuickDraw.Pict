@@ -224,7 +224,7 @@ namespace QuickDraw.Pict
                 case 0x0007: { var p = ReadPoint(b); port.PenSize(p.h, p.v); return true; }              // PnSize
                 case 0x0008: port.PenMode = b.ReadU16BE(); return true;                  // PnMode
                 case 0x000B: { var p = ReadPoint(b); port.OvalSize(p.h, p.v); return true; }             // OvSize
-                case 0x000C: { var p = ReadPoint(b); port.Origin(p.h, p.v); return true; }                // Origin
+                case 0x000C: { int dh = b.ReadI16BE(), dv = b.ReadI16BE(); port.Origin(dh, dv); return true; } // Origin: dh, dv
                 case 0x000D: port.TextSize = b.ReadU16BE(); return true;                 // TxSize
                 case 0x0006: port.SpaceExtra = b.ReadI32BE(); return true;               // SpExtra (Fixed)
                 case 0x0015: port.PnLocHFrac(b.ReadU16BE()); return true;                // PnLocHFrac

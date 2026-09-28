@@ -183,7 +183,7 @@ public class DrawingTests
     public void OriginOpcode_ShiftsLaterCoordinatesCumulatively()
     {
         // Origin(dh=1) twice: a rect at h=2 lands at canvas x=0 (Executor origin(): OffsetRect(srcpicframe, dh, dv)).
-        var bmp = Draw(4, 1, b => b.U16(0x000C).Point(0, 1).U16(0x000C).Point(0, 1).U16(0x0031).Rect(0, 2, 1, 3));
+        var bmp = Draw(4, 1, b => b.Origin(1, 0).Origin(1, 0).U16(0x0031).Rect(0, 2, 1, 3));
         Assert.Equal(new[] { "#..." }, Picture(bmp));
     }
 
@@ -193,7 +193,7 @@ public class DrawingTests
         // DrawPicture adds Origin's dh to patAlign, so the pattern stays fixed to the shapes' own coordinates:
         // fill pattern column 1 (0x40) lands on canvas x = 0 after Origin(dh = 1).
         var bmp = Draw(4, 1, b => b.U16(0x000A).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40)
-            .U16(0x000C).Point(0, 1).U16(0x0034).Rect(0, 1, 1, 5), Rom);
+            .Origin(1, 0).U16(0x0034).Rect(0, 1, 1, 5), Rom);
         Assert.Equal(new[] { "#www" }, Picture(bmp));
     }
 
@@ -201,7 +201,7 @@ public class DrawingTests
     public void OriginOpcode_OnMacOS9_LeavesThePatternOnTheCanvas()
     {
         var bmp = Draw(4, 1, b => b.U16(0x000A).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40).U8(0x40)
-            .U16(0x000C).Point(0, 1).U16(0x0034).Rect(0, 1, 1, 5));
+            .Origin(1, 0).U16(0x0034).Rect(0, 1, 1, 5));
         Assert.Equal(new[] { "w#ww" }, Picture(bmp));
     }
 

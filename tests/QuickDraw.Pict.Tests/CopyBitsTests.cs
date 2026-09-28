@@ -136,7 +136,7 @@ public class CopyBitsTests
     public void OriginOpcode_RemapsTheClip()
     {
         // Clip h 1..3, then Origin dh 1: the clip lands on canvas x 0..2.
-        var bmp = Draw(4, 1, b => b.U16(0x0001).U16(10).Rect(0, 1, 1, 3).U16(0x000C).Point(0, 1).U16(0x0031).Rect(0, 1, 1, 5));
+        var bmp = Draw(4, 1, b => b.U16(0x0001).U16(10).Rect(0, 1, 1, 3).Origin(1, 0).U16(0x0031).Rect(0, 1, 1, 5));
         Assert.Equal(new[] { "##.." }, Picture(bmp));
     }
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+**QuickDraw.Pict**
+- Fixed: the Origin opcode ($000C) reads dh before dv, as Mac OS 9.0's DrawPicture does; pictures that move their
+  origin (DOCMaker's, for one) drew mostly outside their frame.
+
 **QuickDraw.Pict.SkiaSharp** (new)
 - Decode pictures, QTIF files and MacPaint documents to `SKBitmap`/`SKImage` (`PictSkia.Decode`, `DecodeImage`,
   `DecodeAny`), with the same options as the ImageSharp decoder.
